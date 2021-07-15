@@ -40,13 +40,18 @@ unsigned long X509_issuer_and_serial_hash(X509 *a)
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
     unsigned char md[16];
     char *f;
+    EVP_MD *digest = NULL;
 
     if (ctx == NULL)
         goto err;
     f = X509_NAME_oneline(a->cert_info.issuer, NULL, 0);
     if (f == NULL)
         goto err;
-    if (!EVP_DigestInit_ex(ctx, EVP_md5(), NULL))
+    digest = EVP_MD_fetch(a->libctx, SN_md5, a->propq);
+    if (digest == NULL)
+        goto err;
+
+    if (!EVP_DigestInit_ex(ctx, digest, NULL))
         goto err;
     if (!EVP_DigestUpdate(ctx, (unsigned char *)f, strlen(f)))
         goto err;
@@ -61,6 +66,7 @@ unsigned long X509_issuer_and_serial_hash(X509 *a)
            ((unsigned long)md[2] << 16L) | ((unsigned long)md[3] << 24L)
         ) & 0xffffffffL;
  err:
+    EVP_MD_free(digest);
     EVP_MD_CTX_free(ctx);
     return ret;
 }
@@ -177,8 +183,7 @@ int X509_cmp(const X509 *a, const X509 *b)
 
 int ossl_x509_add_cert_new(STACK_OF(X509) **p_sk, X509 *cert, int flags)
 {
-    if (*p_sk == NULL
-            && (*p_sk = sk_X509_new_null()) == NULL) {
+    if (*p_sk == NULL && (*p_sk = sk_X509_new_null()) == NULL) {
         ERR_raise(ERR_LIB_X509, ERR_R_MALLOC_FAILURE);
         return 0;
     }
@@ -216,7 +221,7 @@ int X509_add_cert(STACK_OF(X509) *sk, X509 *cert, int flags)
 }
 
 int X509_add_certs(STACK_OF(X509) *sk, STACK_OF(X509) *certs, int flags)
-/* compiler would allow 'const' for the list of certs, yet they are up-ref'ed */
+/* compiler would allow 'const' for the certs, yet they may get up-ref'ed */
 {
     if (sk == NULL) {
         ERR_raise(ERR_LIB_X509, ERR_R_PASSED_NULL_PARAMETER);
@@ -227,7 +232,7 @@ int X509_add_certs(STACK_OF(X509) *sk, STACK_OF(X509) *certs, int flags)
 
 int ossl_x509_add_certs_new(STACK_OF(X509) **p_sk, STACK_OF(X509) *certs,
                             int flags)
-/* compiler would allow 'const' for the list of certs, yet they are up-ref'ed */
+/* compiler would allow 'const' for the certs, yet they may get up-ref'ed */
 {
     int n = sk_X509_num(certs /* may be NULL */);
     int i;
@@ -252,20 +257,26 @@ int X509_NAME_cmp(const X509_NAME *a, const X509_NAME *b)
         return -1;
 
     /* Ensure canonical encoding is present and up to date */
-    if (!a->canon_enc || a->modified) {
+    if (a->canon_enc == NULL || a->modified) {
         ret = i2d_X509_NAME((X509_NAME *)a, NULL);
         if (ret < 0)
             return -2;
     }
 
-    if (!b->canon_enc || b->modified) {
+    if (b->canon_enc == NULL || b->modified) {
         ret = i2d_X509_NAME((X509_NAME *)b, NULL);
         if (ret < 0)
             return -2;
     }
 
     ret = a->canon_enclen - b->canon_enclen;
-    if (ret == 0 && a->canon_enclen != 0)
+    if (ret == 0 && a->canon_enclen == 0)
+        return 0;
+
+    if (a->canon_enc == NULL || b->canon_enc == NULL)
+        return -2;
+
+    if (ret == 0)
         ret = memcmp(a->canon_enc, b->canon_enc, a->canon_enclen);
 
     return ret < 0 ? -1 : ret > 0;
@@ -380,15 +391,12 @@ int X509_check_private_key(const X509 *x, const EVP_PKEY *k)
     int ret;
 
     xk = X509_get0_pubkey(x);
+    if (xk == NULL) {
+        ERR_raise(ERR_LIB_X509, X509_R_UNABLE_TO_GET_CERTS_PUBLIC_KEY);
+        return 0;
+    }
 
-    if (xk)
-        ret = EVP_PKEY_eq(xk, k);
-    else
-        ret = -2;
-
-    switch (ret) {
-    case 1:
-        break;
+    switch (ret = EVP_PKEY_eq(xk, k)) {
     case 0:
         ERR_raise(ERR_LIB_X509, X509_R_KEY_VALUES_MISMATCH);
         break;
@@ -397,10 +405,10 @@ int X509_check_private_key(const X509 *x, const EVP_PKEY *k)
         break;
     case -2:
         ERR_raise(ERR_LIB_X509, X509_R_UNKNOWN_KEY_TYPE);
+        break;
     }
-    if (ret > 0)
-        return 1;
-    return 0;
+
+    return ret > 0;
 }
 
 /*
@@ -475,7 +483,7 @@ int X509_chain_check_suiteb(int *perror_depth, X509 *x, STACK_OF(X509) *chain,
     if (chain == NULL)
         return check_suite_b(pk, -1, &tflags);
 
-    if (X509_get_version(x) != 2) {
+    if (X509_get_version(x) != X509_VERSION_3) {
         rv = X509_V_ERR_SUITE_B_INVALID_VERSION;
         /* Correct error depth */
         i = 0;
@@ -492,7 +500,7 @@ int X509_chain_check_suiteb(int *perror_depth, X509 *x, STACK_OF(X509) *chain,
     for (; i < sk_X509_num(chain); i++) {
         sign_nid = X509_get_signature_nid(x);
         x = sk_X509_value(chain, i);
-        if (X509_get_version(x) != 2) {
+        if (X509_get_version(x) != X509_VERSION_3) {
             rv = X509_V_ERR_SUITE_B_INVALID_VERSION;
             goto end;
         }

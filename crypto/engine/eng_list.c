@@ -1,5 +1,5 @@
 /*
- * Copyright 2001-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2001-2021 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
@@ -91,7 +91,7 @@ static int engine_list_add(ENGINE *e)
      * Having the engine in the list assumes a structural reference.
      */
     e->struct_ref++;
-    engine_ref_debug(e, 0, 1);
+    ENGINE_REF_PRINT(e, 0, 1);
     /* However it came to be, e is the last item in the list. */
     engine_list_tail = e;
     e->next = NULL;
@@ -138,11 +138,12 @@ ENGINE *ENGINE_get_first(void)
         return NULL;
     }
 
-    CRYPTO_THREAD_write_lock(global_engine_lock);
+    if (!CRYPTO_THREAD_write_lock(global_engine_lock))
+        return NULL;
     ret = engine_list_head;
     if (ret) {
         ret->struct_ref++;
-        engine_ref_debug(ret, 0, 1);
+        ENGINE_REF_PRINT(ret, 0, 1);
     }
     CRYPTO_THREAD_unlock(global_engine_lock);
     return ret;
@@ -157,11 +158,12 @@ ENGINE *ENGINE_get_last(void)
         return NULL;
     }
 
-    CRYPTO_THREAD_write_lock(global_engine_lock);
+    if (!CRYPTO_THREAD_write_lock(global_engine_lock))
+        return NULL;
     ret = engine_list_tail;
     if (ret) {
         ret->struct_ref++;
-        engine_ref_debug(ret, 0, 1);
+        ENGINE_REF_PRINT(ret, 0, 1);
     }
     CRYPTO_THREAD_unlock(global_engine_lock);
     return ret;
@@ -173,14 +175,15 @@ ENGINE *ENGINE_get_next(ENGINE *e)
     ENGINE *ret = NULL;
     if (e == NULL) {
         ERR_raise(ERR_LIB_ENGINE, ERR_R_PASSED_NULL_PARAMETER);
-        return 0;
+        return NULL;
     }
-    CRYPTO_THREAD_write_lock(global_engine_lock);
+    if (!CRYPTO_THREAD_write_lock(global_engine_lock))
+        return NULL;
     ret = e->next;
     if (ret) {
         /* Return a valid structural reference to the next ENGINE */
         ret->struct_ref++;
-        engine_ref_debug(ret, 0, 1);
+        ENGINE_REF_PRINT(ret, 0, 1);
     }
     CRYPTO_THREAD_unlock(global_engine_lock);
     /* Release the structural reference to the previous ENGINE */
@@ -193,14 +196,15 @@ ENGINE *ENGINE_get_prev(ENGINE *e)
     ENGINE *ret = NULL;
     if (e == NULL) {
         ERR_raise(ERR_LIB_ENGINE, ERR_R_PASSED_NULL_PARAMETER);
-        return 0;
+        return NULL;
     }
-    CRYPTO_THREAD_write_lock(global_engine_lock);
+    if (!CRYPTO_THREAD_write_lock(global_engine_lock))
+        return NULL;
     ret = e->prev;
     if (ret) {
         /* Return a valid structural reference to the next ENGINE */
         ret->struct_ref++;
-        engine_ref_debug(ret, 0, 1);
+        ENGINE_REF_PRINT(ret, 0, 1);
     }
     CRYPTO_THREAD_unlock(global_engine_lock);
     /* Release the structural reference to the previous ENGINE */
@@ -220,7 +224,8 @@ int ENGINE_add(ENGINE *e)
         ERR_raise(ERR_LIB_ENGINE, ENGINE_R_ID_OR_NAME_MISSING);
         return 0;
     }
-    CRYPTO_THREAD_write_lock(global_engine_lock);
+    if (!CRYPTO_THREAD_write_lock(global_engine_lock))
+        return 0;
     if (!engine_list_add(e)) {
         ERR_raise(ERR_LIB_ENGINE, ENGINE_R_INTERNAL_LIST_ERROR);
         to_return = 0;
@@ -237,7 +242,8 @@ int ENGINE_remove(ENGINE *e)
         ERR_raise(ERR_LIB_ENGINE, ERR_R_PASSED_NULL_PARAMETER);
         return 0;
     }
-    CRYPTO_THREAD_write_lock(global_engine_lock);
+    if (!CRYPTO_THREAD_write_lock(global_engine_lock))
+        return 0;
     if (!engine_list_remove(e)) {
         ERR_raise(ERR_LIB_ENGINE, ENGINE_R_INTERNAL_LIST_ERROR);
         to_return = 0;
@@ -289,7 +295,8 @@ ENGINE *ENGINE_by_id(const char *id)
         return NULL;
     }
 
-    CRYPTO_THREAD_write_lock(global_engine_lock);
+    if (!CRYPTO_THREAD_write_lock(global_engine_lock))
+        return NULL;
     iterator = engine_list_head;
     while (iterator && (strcmp(id, iterator->id) != 0))
         iterator = iterator->next;
@@ -309,7 +316,7 @@ ENGINE *ENGINE_by_id(const char *id)
             }
         } else {
             iterator->struct_ref++;
-            engine_ref_debug(iterator, 0, 1);
+            ENGINE_REF_PRINT(iterator, 0, 1);
         }
     }
     CRYPTO_THREAD_unlock(global_engine_lock);

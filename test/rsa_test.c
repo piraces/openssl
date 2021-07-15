@@ -278,34 +278,11 @@ static int test_rsa_pkcs1(int idx)
                            NULL, NULL);
 }
 
-static int test_rsa_sslv23(int idx)
-{
-    int ret;
-
-    /* Simulate an SSLv2 only client talking to a TLS capable server */
-    ret = test_rsa_simple(idx, RSA_PKCS1_PADDING, RSA_SSLV23_PADDING, 1, NULL,
-                          NULL, NULL);
-
-    /* Simulate a TLS capable client talking to an SSLv2 only server */
-    ret &= test_rsa_simple(idx, RSA_SSLV23_PADDING, RSA_PKCS1_PADDING, 1, NULL,
-                           NULL, NULL);
-
-    /*
-     * Simulate a TLS capable client talking to a TLS capable server. Should
-     * fail due to detecting a rollback attack.
-     */
-    ret &= test_rsa_simple(idx, RSA_SSLV23_PADDING, RSA_SSLV23_PADDING, 0, NULL,
-                           NULL, NULL);
-
-    return ret;
-}
-
 static int test_rsa_oaep(int idx)
 {
     int ret = 0;
     RSA *key = NULL;
     unsigned char ptext[256];
-    unsigned char ctext[256];
     static unsigned char ptext_ex[] = "\x54\x85\x9b\x34\x2c\x49\xea\x2a";
     unsigned char ctext_ex[256];
     int plen;
@@ -327,17 +304,17 @@ static int test_rsa_oaep(int idx)
 
     /* Try decrypting corrupted ciphertexts. */
     for (n = 0; n < clen; ++n) {
-        ctext[n] ^= 1;
-        num = RSA_private_decrypt(clen, ctext, ptext, key,
+        ctext_ex[n] ^= 1;
+        num = RSA_private_decrypt(clen, ctext_ex, ptext, key,
                                       RSA_PKCS1_OAEP_PADDING);
         if (!TEST_int_le(num, 0))
             goto err;
-        ctext[n] ^= 1;
+        ctext_ex[n] ^= 1;
     }
 
     /* Test truncated ciphertexts, as well as negative length. */
     for (n = -1; n < clen; ++n) {
-        num = RSA_private_decrypt(n, ctext, ptext, key,
+        num = RSA_private_decrypt(n, ctext_ex, ptext, key,
                                   RSA_PKCS1_OAEP_PADDING);
         if (!TEST_int_le(num, 0))
             goto err;
@@ -359,16 +336,22 @@ static const struct {
     { 4096,     152 },
     { 6144,     176 },
     { 8192,     200 },
+    /* NIST FIPS 140-2 IG 7.5 */
+    { 7680,     192 },
+    { 15360,    256 },
     /* Older values */
     { 256,      40  },
     { 512,      56  },
     { 1024,     80  },
-    /* Slightly different value to the 256 that NIST lists in their tables */
-    { 15360,    264 },
     /* Some other values */
     { 8888,     208 },
     { 2468,     120 },
-    { 13456,    248 }
+    { 13456,    248 },
+    /* Edge points */
+    { 15359,    256 },
+    { 15361,    264 },
+    { 7679,     192 },
+    { 7681,     200 },
 };
 
 static int test_rsa_security_bit(int n)
@@ -411,7 +394,6 @@ err:
 int setup_tests(void)
 {
     ADD_ALL_TESTS(test_rsa_pkcs1, 3);
-    ADD_ALL_TESTS(test_rsa_sslv23, 3);
     ADD_ALL_TESTS(test_rsa_oaep, 3);
     ADD_ALL_TESTS(test_rsa_security_bit, OSSL_NELEM(rsa_security_bits_cases));
     return 1;

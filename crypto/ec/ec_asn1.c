@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2002-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -965,6 +965,9 @@ EC_KEY *d2i_ECPrivateKey(EC_KEY **a, const unsigned char **in, long len)
         goto err;
     }
 
+    if (EC_GROUP_get_curve_name(ret->group) == NID_sm2)
+        EC_KEY_set_flags(ret, EC_FLAG_SM2_RANGE);
+
     EC_POINT_clear_free(ret->pub_key);
     ret->pub_key = EC_POINT_new(ret->group);
     if (ret->pub_key == NULL) {
@@ -1109,6 +1112,10 @@ EC_KEY *d2i_ECParameters(EC_KEY **a, const unsigned char **in, long len)
             ret->dirty_cnt++;
         return NULL;
     }
+
+    if (EC_GROUP_get_curve_name(ret->group) == NID_sm2)
+        EC_KEY_set_flags(ret, EC_FLAG_SM2_RANGE);
+
     ret->dirty_cnt++;
 
     if (a)
@@ -1245,7 +1252,7 @@ int i2d_ECDSA_SIG(const ECDSA_SIG *sig, unsigned char **ppout)
             return -1;
     }
 
-    if (!encode_der_dsa_sig(&pkt, sig->r, sig->s)
+    if (!ossl_encode_der_dsa_sig(&pkt, sig->r, sig->s)
             || !WPACKET_get_total_written(&pkt, &encoded_len)
             || !WPACKET_finish(&pkt)) {
         BUF_MEM_free(buf);

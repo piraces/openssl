@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# Copyright 2018-2020 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2018-2021 The OpenSSL Project Authors. All Rights Reserved.
 #
 # Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
@@ -80,7 +80,7 @@ sub tsignverify {
     my $sigfile = basename($privkey, '.pem') . '.sig';
 
     my @args = ();
-    plan tests => 4;
+    plan tests => 5;
 
     @args = ('openssl', 'pkeyutl', '-sign',
              '-inkey', $privkey,
@@ -89,6 +89,15 @@ sub tsignverify {
     push(@args, @extraopts);
     ok(run(app([@args])),
        $testtext.": Generating signature");
+
+    @args = ('openssl', 'pkeyutl', '-sign',
+             '-inkey', $privkey,
+             '-keyform', 'DER',
+             '-out', $sigfile,
+             '-in', $data_to_sign);
+    push(@args, @extraopts);
+    ok(!run(app([@args])),
+       $testtext.": Checking that mismatching keyform fails");
 
     @args = ('openssl', 'pkeyutl', '-verify',
              '-inkey', $privkey,
@@ -99,6 +108,7 @@ sub tsignverify {
        $testtext.": Verify signature with private key");
 
     @args = ('openssl', 'pkeyutl', '-verify',
+             '-keyform', 'PEM',
              '-inkey', $pubkey, '-pubin',
              '-sigfile', $sigfile,
              '-in', $data_to_sign);

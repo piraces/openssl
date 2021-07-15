@@ -463,7 +463,6 @@ OSSL_DEPRECATEDIN_3_0 int ERR_load_X509V3_strings(void);
 #  define CRYPTO_F_CRYPTO_OCB128_COPY_CTX                  0
 #  define CRYPTO_F_CRYPTO_OCB128_INIT                      0
 #  define CRYPTO_F_CRYPTO_SET_EX_DATA                      0
-#  define CRYPTO_F_FIPS_MODE_SET                           0
 #  define CRYPTO_F_GET_AND_LOCK                            0
 #  define CRYPTO_F_OPENSSL_ATEXIT                          0
 #  define CRYPTO_F_OPENSSL_BUF2HEXSTR                      0
@@ -1453,6 +1452,11 @@ OSSL_DEPRECATEDIN_3_0 int ERR_load_X509V3_strings(void);
 #  define X509V3_F_X509V3_PARSE_LIST                       0
 #  define X509V3_F_X509_PURPOSE_ADD                        0
 #  define X509V3_F_X509_PURPOSE_SET                        0
+
+/*
+ * Compatibility defines.
+ */
+# define EVP_R_OPERATON_NOT_INITIALIZED    EVP_R_OPERATION_NOT_INITIALIZED
 
 # endif
 

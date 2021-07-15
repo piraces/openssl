@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# Copyright 2020 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2020-2021 The OpenSSL Project Authors. All Rights Reserved.
 #
 # Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
@@ -19,22 +19,31 @@ setup("test_provider_status");
 
 use lib srctop_dir('Configurations');
 use lib bldtop_dir('.');
-use platform;
 
 my $no_fips = disabled('fips') || ($ENV{NO_FIPS} // 0);
 
-plan skip_all => "provider_status is not supported by this test"
-    if $no_fips;
+plan tests => 5;
 
-plan tests => 2;
+ok(run(test(["provider_status_test", "-provider_name", "null"])),
+   "null provider test");
 
-my $infile = bldtop_file('providers', platform->dso('fips'));
+ok(run(test(["provider_status_test", "-provider_name", "base"])),
+   "base provider test");
 
-ok(run(app(['openssl', 'fipsinstall',
-            '-out', bldtop_file('providers', 'fipsmodule.cnf'),
-            '-module', $infile])),
-   "fipsinstall");
+ok(run(test(["provider_status_test", "-provider_name", "default"])),
+   "default provider test");
 
-ok(run(test(["provider_status_test", "-config", srctop_file("test","fips.cnf"),
-             "-provider_name", "fips"])),
-   "running provider_status_test");
+SKIP: {
+    skip "Skipping legacy test", 1
+        if disabled("legacy");
+    ok(run(test(["provider_status_test", "-provider_name", "legacy"])),
+       "legacy provider test");
+}
+
+SKIP: {
+    skip "Skipping fips test", 1
+        if $no_fips;
+    ok(run(test(["provider_status_test", "-config", srctop_file("test","fips.cnf"),
+                 "-provider_name", "fips"])),
+       "fips provider test");
+}

@@ -14,7 +14,9 @@
 #include "internal/deprecated.h"
 
 #include <openssl/bn.h>
-#include <openssl/engine.h>
+#ifndef FIPS_MODULE
+# include <openssl/engine.h>
+#endif
 #include "internal/cryptlib.h"
 #include "internal/refcount.h"
 #include "crypto/dsa.h"
@@ -169,7 +171,8 @@ static DSA *dsa_new_intern(ENGINE *engine, OSSL_LIB_CTX *libctx)
     ret->flags = ret->meth->flags & ~DSA_FLAG_NON_FIPS_ALLOW;
 
 #ifndef FIPS_MODULE
-    if (!crypto_new_ex_data_ex(libctx, CRYPTO_EX_INDEX_DSA, ret, &ret->ex_data))
+    if (!ossl_crypto_new_ex_data_ex(libctx, CRYPTO_EX_INDEX_DSA, ret,
+                                    &ret->ex_data))
         goto err;
 #endif
 

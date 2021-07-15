@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2020-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -34,7 +34,7 @@ int ossl_digest_md_to_nid(const EVP_MD *md, const OSSL_ITEM *it, size_t it_len)
 }
 
 /*
- * Retrieve one of the FIPs approved hash algorithms by nid.
+ * Retrieve one of the FIPS approved hash algorithms by nid.
  * See FIPS 180-4 "Secure Hash Standard" and FIPS 202 - SHA-3.
  */
 int ossl_digest_get_approved_nid(const EVP_MD *md)

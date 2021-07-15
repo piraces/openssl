@@ -7,31 +7,30 @@
  * https://www.openssl.org/source/license.html
  */
 
+/* This file has quite some overlap with engines/e_loader_attic.c */
+
 #include "e_os.h"                /* To get strncasecmp() on Windows */
+
 #include <string.h>
 #include <sys/stat.h>
-#include <ctype.h>
+#include <ctype.h>  /* isdigit */
 #include <assert.h>
 
-#include <openssl/core.h>
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
 #include <openssl/core_object.h>
-#include <openssl/crypto.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
-#include <openssl/buffer.h>
 #include <openssl/params.h>
 #include <openssl/decoder.h>
-#include <openssl/store.h>       /* The OSSL_STORE_INFO type numbers */
 #include <openssl/proverr.h>
+#include <openssl/store.h>       /* The OSSL_STORE_INFO type numbers */
 #include "internal/cryptlib.h"
 #include "internal/o_dir.h"
-#include "crypto/pem.h"          /* For PVK and "blob" PEM headers */
 #include "crypto/decoder.h"
+#include "crypto/ctype.h"        /* ossl_isdigit() */
 #include "prov/implementations.h"
 #include "prov/bio.h"
-#include "prov/provider_ctx.h"
 #include "file_store_local.h"
 
 DEFINE_STACK_OF(OSSL_STORE_INFO)
@@ -73,10 +72,6 @@ struct file_ctx_st {
         IS_FILE = 0,             /* Read file and pass results */
         IS_DIR                   /* Pass directory entry names */
     } type;
-
-    /* Flag bits */
-    unsigned int flag_attached:1;
-    unsigned int flag_buffered:1;
 
     union {
         /* Used with |IS_FILE| */
@@ -157,15 +152,11 @@ static OSSL_DECODER_CLEANUP file_load_cleanup;
  *
  */
 static struct file_ctx_st *file_open_stream(BIO *source, const char *uri,
-                                            const char *input_type,
                                             void *provctx)
 {
     struct file_ctx_st *ctx;
 
-    if ((ctx = new_file_ctx(IS_FILE, uri, provctx)) == NULL
-        || (input_type != NULL
-            && (ctx->_.file.input_type =
-                OPENSSL_strdup(input_type)) == NULL)) {
+    if ((ctx = new_file_ctx(IS_FILE, uri, provctx)) == NULL) {
         ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
         goto err;
     }
@@ -293,145 +284,24 @@ static void *file_open(void *provctx, const char *uri)
     if (S_ISDIR(st.st_mode))
         ctx = file_open_dir(path, uri, provctx);
     else if ((bio = BIO_new_file(path, "rb")) == NULL
-             || (ctx = file_open_stream(bio, uri, NULL, provctx)) == NULL)
+             || (ctx = file_open_stream(bio, uri, provctx)) == NULL)
         BIO_free_all(bio);
 
     return ctx;
 }
 
-/*
- * Attached input streams must be treated very very carefully to avoid
- * nasty surprises.
- *
- * This implementation tries to support input streams that can't be reset,
- * such as standard input.  However, OSSL_DECODER assumes resettable streams,
- * and because the PEM decoder may read quite a bit of the input file to skip
- * past any non-PEM text that precedes the PEM block, we may need to detect
- * if the input stream is a PEM file early.
- *
- * If the input stream supports BIO_tell(), we assume that it also supports
- * BIO_seek(), making it a resettable stream and therefore safe to fully
- * unleash OSSL_DECODER.
- *
- * If the input stream doesn't support BIO_tell(), we must assume that we
- * have a non-resettable stream, and must tread carefully.  We do so by
- * trying to detect if the input is PEM, MSBLOB or PVK, and if not, we
- * assume that it's DER.
- *
- * To detect if an input stream is PEM, MSBLOB or PVK, we use the buffer BIO
- * filter, which allows us a 4KiB resettable read-ahead.  We *hope* that 4KiB
- * will be enough to find the start of the PEM block.
- *
- * It should be possible to use this same technique to detect other file
- * types as well.
- *
- * An alternative technique would be to have an endlessly caching BIO filter.
- * That would take away the need for all the detection here, and simply leave
- * it for OSSL_DECODER to find out on its own while supporting its demand for
- * resettable input streams.
- * That's a possible future development.
- */
-
-# define INPUT_TYPE_ANY         NULL
-# define INPUT_TYPE_DER         "DER"
-# define INPUT_TYPE_PEM         "PEM"
-# define INPUT_TYPE_MSBLOB      "MSBLOB"
-# define INPUT_TYPE_PVK         "PVK"
-
 void *file_attach(void *provctx, OSSL_CORE_BIO *cin)
 {
-    BIO *new_bio = bio_new_from_core_bio(provctx, cin);
-    BIO *new_bio_tmp = NULL;
-    BIO *buff = NULL;
-    char peekbuf[4096] = { 0, };
-    int loc;
-    const char *input_type = NULL;
-    unsigned int flag_attached = 1;
-    unsigned int flag_buffered = 0;
-    struct file_ctx_st *ctx = NULL;
+    struct file_ctx_st *ctx;
+    BIO *new_bio = ossl_bio_new_from_core_bio(provctx, cin);
 
     if (new_bio == NULL)
-        return 0;
+        return NULL;
 
-    /* Try to get the current position */
-    loc = BIO_tell(new_bio);
-
-    if ((buff = BIO_new(BIO_f_buffer())) == NULL
-        || (new_bio_tmp = BIO_push(buff, new_bio)) == NULL)
-        goto err;
-
-    /* Assumption, if we can't detect PEM */
-    input_type = INPUT_TYPE_DER;
-    flag_buffered = 1;
-    new_bio = new_bio_tmp;
-
-    if (BIO_buffer_peek(new_bio, peekbuf, sizeof(peekbuf) - 1) > 0) {
-#ifndef OPENSSL_NO_DSA
-        const unsigned char *p = NULL;
-        unsigned int magic = 0, bitlen = 0;
-        int isdss = 0, ispub = -1;
-# ifndef OPENSSL_NO_RC4
-        unsigned int saltlen = 0, keylen = 0;
-# endif
-#endif
-
-        peekbuf[sizeof(peekbuf) - 1] = '\0';
-        if (strstr(peekbuf, "-----BEGIN ") != NULL)
-            input_type = INPUT_TYPE_PEM;
-#ifndef OPENSSL_NO_DSA
-        else if (p = (unsigned char *)peekbuf,
-                 ossl_do_blob_header(&p, sizeof(peekbuf), &magic, &bitlen,
-                                     &isdss, &ispub))
-            input_type = INPUT_TYPE_MSBLOB;
-# ifndef OPENSSL_NO_RC4
-        else if (p = (unsigned char *)peekbuf,
-                 ossl_do_PVK_header(&p, sizeof(peekbuf), 0, &saltlen, &keylen))
-            input_type = INPUT_TYPE_PVK;
-# endif
-#endif
-    }
-
-    /*
-     * After peeking, we know that the underlying source BIO has moved ahead
-     * from its earlier position and that if it supports BIO_tell(), that
-     * should be a number that differs from |loc|.  Otherwise, we will get
-     * the same value, which may one of:
-     *
-     * -   zero (the source BIO doesn't support BIO_tell() / BIO_seek() /
-     *     BIO_reset())
-     * -   -1 (the underlying operating system / C library routines do not
-     *     support BIO_tell() / BIO_seek() / BIO_reset())
-     *
-     * If it turns out that the source BIO does support BIO_tell(), we pop
-     * the buffer BIO filter and mark this input as |INPUT_TYPE_ANY|, which
-     * fully unleashes OSSL_DECODER to do its thing.
-     */
-    if (BIO_tell(new_bio) != loc) {
-        /* In this case, anything goes */
-        input_type = INPUT_TYPE_ANY;
-
-        /* Restore the source BIO like it was when entering this function */
-        new_bio = BIO_pop(buff);
-        BIO_free(buff);
-        (void)BIO_seek(new_bio, loc);
-
-        flag_buffered = 0;
-    }
-
-    if ((ctx = file_open_stream(new_bio, NULL, input_type, provctx)) == NULL)
-        goto err;
-
-    ctx->flag_attached = flag_attached;
-    ctx->flag_buffered = flag_buffered;
-
+    ctx = file_open_stream(new_bio, NULL, provctx);
+    if (ctx == NULL)
+        BIO_free(new_bio);
     return ctx;
- err:
-    if (flag_buffered) {
-        new_bio = BIO_pop(buff);
-        BIO_free(buff);
-    }
-    BIO_free(new_bio);           /* Removes the provider BIO filter */
-    return NULL;
 }
 
 /*-
@@ -445,6 +315,7 @@ static const OSSL_PARAM *file_settable_ctx_params(void *provctx)
         OSSL_PARAM_utf8_string(OSSL_STORE_PARAM_PROPERTIES, NULL, 0),
         OSSL_PARAM_int(OSSL_STORE_PARAM_EXPECT, NULL),
         OSSL_PARAM_octet_string(OSSL_STORE_PARAM_SUBJECT, NULL, 0),
+        OSSL_PARAM_utf8_string(OSSL_STORE_PARAM_INPUT_TYPE, NULL, 0),
         OSSL_PARAM_END
     };
     return known_settable_ctx_params;
@@ -455,12 +326,25 @@ static int file_set_ctx_params(void *loaderctx, const OSSL_PARAM params[])
     struct file_ctx_st *ctx = loaderctx;
     const OSSL_PARAM *p;
 
-    p = OSSL_PARAM_locate_const(params, OSSL_STORE_PARAM_PROPERTIES);
-    if (p != NULL) {
-        OPENSSL_free(ctx->_.file.propq);
-        ctx->_.file.propq = NULL;
-        if (!OSSL_PARAM_get_utf8_string(p, &ctx->_.file.propq, 0))
-            return 0;
+    if (params == NULL)
+        return 1;
+
+    if (ctx->type != IS_DIR) {
+        /* these parameters are ignored for directories */
+        p = OSSL_PARAM_locate_const(params, OSSL_STORE_PARAM_PROPERTIES);
+        if (p != NULL) {
+            OPENSSL_free(ctx->_.file.propq);
+            ctx->_.file.propq = NULL;
+            if (!OSSL_PARAM_get_utf8_string(p, &ctx->_.file.propq, 0))
+                return 0;
+        }
+        p = OSSL_PARAM_locate_const(params, OSSL_STORE_PARAM_INPUT_TYPE);
+        if (p != NULL) {
+            OPENSSL_free(ctx->_.file.input_type);
+            ctx->_.file.input_type = NULL;
+            if (!OSSL_PARAM_get_utf8_string(p, &ctx->_.file.input_type, 0))
+                return 0;
+        }
     }
     p = OSSL_PARAM_locate_const(params, OSSL_STORE_PARAM_EXPECT);
     if (p != NULL && !OSSL_PARAM_get_int(p, &ctx->expected_type))
@@ -535,12 +419,8 @@ void file_load_cleanup(void *construct_data)
 
 static int file_setup_decoders(struct file_ctx_st *ctx)
 {
-    EVP_PKEY *dummy; /* for ossl_decoder_ctx_setup_for_pkey() */
     OSSL_LIB_CTX *libctx = ossl_prov_ctx_get0_libctx(ctx->provctx);
-    OSSL_DECODER *to_obj = NULL; /* Last resort decoder */
-    OSSL_DECODER_INSTANCE *to_obj_inst = NULL;
-    OSSL_DECODER_CLEANUP *old_cleanup = NULL;
-    void *old_construct_data = NULL;
+    const OSSL_ALGORITHM *to_algo = NULL;
     int ok = 0;
 
     /* Setup for this session, so only if not already done */
@@ -557,58 +437,42 @@ static int file_setup_decoders(struct file_ctx_st *ctx)
             goto err;
         }
 
-        /*
-         * Create the internal last resort decoder implementation together
-         * with a "decoder instance".
-         * The decoder doesn't need any identification or to be attached to
-         * any provider, since it's only used locally.
-         */
-        to_obj = ossl_decoder_from_dispatch(0, &ossl_der_to_obj_algorithm,
-                                            NULL);
-        if (to_obj == NULL)
-            goto err;
-        to_obj_inst = ossl_decoder_instance_new(to_obj, ctx->provctx);
-        if (to_obj_inst == NULL)
-            goto err;
+        for (to_algo = ossl_any_to_obj_algorithm;
+             to_algo->algorithm_names != NULL;
+             to_algo++) {
+            OSSL_DECODER *to_obj = NULL;
+            OSSL_DECODER_INSTANCE *to_obj_inst = NULL;
 
-        if (!ossl_decoder_ctx_add_decoder_inst(ctx->_.file.decoderctx,
-                                               to_obj_inst)) {
+            /*
+             * Create the internal last resort decoder implementation
+             * together with a "decoder instance".
+             * The decoder doesn't need any identification or to be
+             * attached to any provider, since it's only used locally.
+             */
+            to_obj = ossl_decoder_from_algorithm(0, to_algo, NULL);
+            if (to_obj != NULL)
+                to_obj_inst = ossl_decoder_instance_new(to_obj, ctx->provctx);
+            OSSL_DECODER_free(to_obj);
+            if (to_obj_inst == NULL)
+                goto err;
+
+            if (!ossl_decoder_ctx_add_decoder_inst(ctx->_.file.decoderctx,
+                                                   to_obj_inst)) {
+                ossl_decoder_instance_free(to_obj_inst);
+                ERR_raise(ERR_LIB_PROV, ERR_R_OSSL_DECODER_LIB);
+                goto err;
+            }
+        }
+        /* Add on the usual extra decoders */
+        if (!OSSL_DECODER_CTX_add_extra(ctx->_.file.decoderctx,
+                                        libctx, ctx->_.file.propq)) {
             ERR_raise(ERR_LIB_PROV, ERR_R_OSSL_DECODER_LIB);
             goto err;
         }
 
         /*
-         * OSSL_DECODER_INSTANCE shouldn't be freed from this point on.
-         * That's going to happen whenever the OSSL_DECODER_CTX is freed.
-         */
-        to_obj_inst = NULL;
-
-        /*
-         * Add on the usual decoder context for keys, with a dummy object.
-         * Since we're setting up our own constructor, we don't need to care
-         * more than that...
-         */
-        if (!ossl_decoder_ctx_setup_for_pkey(ctx->_.file.decoderctx,
-                                             &dummy, NULL,
-                                             libctx, ctx->_.file.propq)
-            || !OSSL_DECODER_CTX_add_extra(ctx->_.file.decoderctx,
-                                           libctx, ctx->_.file.propq)) {
-            ERR_raise(ERR_LIB_PROV, ERR_R_OSSL_DECODER_LIB);
-            goto err;
-        }
-
-        /*
-         * Then we throw away the installed finalizer data, and install our
-         * own instead.
-         */
-        old_cleanup = OSSL_DECODER_CTX_get_cleanup(ctx->_.file.decoderctx);
-        old_construct_data =
-            OSSL_DECODER_CTX_get_construct_data(ctx->_.file.decoderctx);
-        if (old_cleanup != NULL)
-            old_cleanup(old_construct_data);
-
-        /*
-         * Set the hooks.
+         * Then install our constructor hooks, which just passes decoded
+         * data to the load callback
          */
         if (!OSSL_DECODER_CTX_set_construct(ctx->_.file.decoderctx,
                                             file_load_construct)
@@ -621,7 +485,6 @@ static int file_setup_decoders(struct file_ctx_st *ctx)
 
     ok = 1;
  err:
-    OSSL_DECODER_free(to_obj);
     return ok;
 }
 
@@ -630,6 +493,7 @@ static int file_load_file(struct file_ctx_st *ctx,
                           OSSL_PASSPHRASE_CALLBACK *pw_cb, void *pw_cbarg)
 {
     struct file_load_data_st data;
+    int ret, err;
 
     /* Setup the decoders (one time shot per session */
 
@@ -645,7 +509,16 @@ static int file_load_file(struct file_ctx_st *ctx,
 
     /* Launch */
 
-    return OSSL_DECODER_from_bio(ctx->_.file.decoderctx, ctx->_.file.file);
+    ERR_set_mark();
+    ret = OSSL_DECODER_from_bio(ctx->_.file.decoderctx, ctx->_.file.file);
+    if (BIO_eof(ctx->_.file.file)
+        && ((err = ERR_peek_last_error()) != 0)
+        && ERR_GET_LIB(err) == ERR_LIB_OSSL_DECODER
+        && ERR_GET_REASON(err) == ERR_R_UNSUPPORTED)
+        ERR_pop_to_mark();
+    else
+        ERR_clear_last_mark();
+    return ret;
 }
 
 /*-
@@ -679,6 +552,7 @@ static char *file_name_to_uri(struct file_ctx_st *ctx, const char *name)
 static int file_name_check(struct file_ctx_st *ctx, const char *name)
 {
     const char *p = NULL;
+    size_t len = strlen(ctx->_.dir.search_name);
 
     /* If there are no search criteria, all names are accepted */
     if (ctx->_.dir.search_name[0] == '\0')
@@ -693,11 +567,9 @@ static int file_name_check(struct file_ctx_st *ctx, const char *name)
     /*
      * First, check the basename
      */
-    if (strncasecmp(name, ctx->_.dir.search_name,
-                    sizeof(ctx->_.dir.search_name) - 1) != 0
-        || name[sizeof(ctx->_.dir.search_name) - 1] != '.')
+    if (strncasecmp(name, ctx->_.dir.search_name, len) != 0 || name[len] != '.')
         return 0;
-    p = &name[sizeof(ctx->_.dir.search_name)];
+    p = &name[len + 1];
 
     /*
      * Then, if the expected type is a CRL, check that the extension starts
@@ -854,30 +726,11 @@ static int file_close_dir(struct file_ctx_st *ctx)
 
 static int file_close_stream(struct file_ctx_st *ctx)
 {
-    if (ctx->flag_buffered) {
-        /*
-         * file_attach() pushed a BIO_f_buffer() on top of the regular BIO.
-         * Drop it.
-         */
-        BIO *buff = ctx->_.file.file;
-
-        /* Detach buff */
-        ctx->_.file.file = BIO_pop(ctx->_.file.file);
-
-        BIO_free(buff);
-    }
-
     /*
-     * If it was attached, we only free the top, as that's the provider BIO
-     * filter.  Otherwise, it was entirely allocated by this implementation,
-     * and can safely be completely freed.
+     * This frees either the provider BIO filter (for file_attach()) OR
+     * the allocated file BIO (for file_open()).
      */
-    if (ctx->flag_attached)
-        BIO_free(ctx->_.file.file);
-    else
-        BIO_free_all(ctx->_.file.file);
-
-    /* To avoid double free */
+    BIO_free(ctx->_.file.file);
     ctx->_.file.file = NULL;
 
     free_file_ctx(ctx);

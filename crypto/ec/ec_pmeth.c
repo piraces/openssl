@@ -126,7 +126,7 @@ static int pkey_ec_sign(EVP_PKEY_CTX *ctx, unsigned char *sig, size_t *siglen,
         return 0;
     }
 
-    type = (dctx->md != NULL) ? EVP_MD_type(dctx->md) : NID_sha1;
+    type = (dctx->md != NULL) ? EVP_MD_get_type(dctx->md) : NID_sha1;
 
     ret = ECDSA_sign(type, tbs, tbslen, sig, &sltmp, ec);
 
@@ -145,7 +145,7 @@ static int pkey_ec_verify(EVP_PKEY_CTX *ctx,
     EC_KEY *ec = ctx->pkey->pkey.ec;
 
     if (dctx->md)
-        type = EVP_MD_type(dctx->md);
+        type = EVP_MD_get_type(dctx->md);
     else
         type = NID_sha1;
 
@@ -161,8 +161,15 @@ static int pkey_ec_derive(EVP_PKEY_CTX *ctx, unsigned char *key, size_t *keylen)
     size_t outlen;
     const EC_POINT *pubkey = NULL;
     EC_KEY *eckey;
+    const EC_KEY *eckeypub;
     EC_PKEY_CTX *dctx = ctx->data;
-    if (!ctx->pkey || !ctx->peerkey) {
+
+    if (ctx->pkey == NULL || ctx->peerkey == NULL) {
+        ERR_raise(ERR_LIB_EC, EC_R_KEYS_NOT_SET);
+        return 0;
+    }
+    eckeypub = EVP_PKEY_get0_EC_KEY(ctx->peerkey);
+    if (eckeypub == NULL) {
         ERR_raise(ERR_LIB_EC, EC_R_KEYS_NOT_SET);
         return 0;
     }
@@ -178,7 +185,7 @@ static int pkey_ec_derive(EVP_PKEY_CTX *ctx, unsigned char *key, size_t *keylen)
         *keylen = (EC_GROUP_get_degree(group) + 7) / 8;
         return 1;
     }
-    pubkey = EC_KEY_get0_public_key(ctx->peerkey->pkey.ec);
+    pubkey = EC_KEY_get0_public_key(eckeypub);
 
     /*
      * NB: unlike PKCS#3 DH, if *outlen is less than maximum size this is not
@@ -328,17 +335,17 @@ static int pkey_ec_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
         return dctx->kdf_ukmlen;
 
     case EVP_PKEY_CTRL_MD:
-        if (EVP_MD_type((const EVP_MD *)p2) != NID_sha1 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_ecdsa_with_SHA1 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_sha224 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_sha256 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_sha384 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_sha512 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_sha3_224 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_sha3_256 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_sha3_384 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_sha3_512 &&
-            EVP_MD_type((const EVP_MD *)p2) != NID_sm3) {
+        if (EVP_MD_get_type((const EVP_MD *)p2) != NID_sha1 &&
+            EVP_MD_get_type((const EVP_MD *)p2) != NID_ecdsa_with_SHA1 &&
+            EVP_MD_get_type((const EVP_MD *)p2) != NID_sha224 &&
+            EVP_MD_get_type((const EVP_MD *)p2) != NID_sha256 &&
+            EVP_MD_get_type((const EVP_MD *)p2) != NID_sha384 &&
+            EVP_MD_get_type((const EVP_MD *)p2) != NID_sha512 &&
+            EVP_MD_get_type((const EVP_MD *)p2) != NID_sha3_224 &&
+            EVP_MD_get_type((const EVP_MD *)p2) != NID_sha3_256 &&
+            EVP_MD_get_type((const EVP_MD *)p2) != NID_sha3_384 &&
+            EVP_MD_get_type((const EVP_MD *)p2) != NID_sha3_512 &&
+            EVP_MD_get_type((const EVP_MD *)p2) != NID_sm3) {
             ERR_raise(ERR_LIB_EC, EC_R_INVALID_DIGEST_TYPE);
             return 0;
         }

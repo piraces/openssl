@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2018-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -14,6 +14,7 @@
 #define BLAKE2_OUTBYTES BLAKE2B_OUTBYTES
 #define BLAKE2_PERSONALBYTES BLAKE2B_PERSONALBYTES
 #define BLAKE2_SALTBYTES BLAKE2B_SALTBYTES
+#define BLAKE2_BLOCKBYTES BLAKE2B_BLOCKBYTES
 
 /* Function names */
 #define BLAKE2_PARAM_INIT ossl_blake2b_param_init

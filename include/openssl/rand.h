@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -61,11 +61,20 @@ OSSL_DEPRECATEDIN_3_0 RAND_METHOD *RAND_OpenSSL(void);
 int RAND_bytes(unsigned char *buf, int num);
 int RAND_priv_bytes(unsigned char *buf, int num);
 
-/* Equivalent of RAND_priv_bytes() but additionally taking an OSSL_LIB_CTX */
-int RAND_priv_bytes_ex(OSSL_LIB_CTX *ctx, unsigned char *buf, int num);
+/*
+ * Equivalent of RAND_priv_bytes() but additionally taking an OSSL_LIB_CTX and
+ * a strength.
+ */
+int RAND_priv_bytes_ex(OSSL_LIB_CTX *ctx, unsigned char *buf, size_t num,
+                       unsigned int strength);
 
-/* Equivalent of RAND_bytes() but additionally taking an OSSL_LIB_CTX */
-int RAND_bytes_ex(OSSL_LIB_CTX *ctx, unsigned char *buf, int num);
+/*
+ * Equivalent of RAND_bytes() but additionally taking an OSSL_LIB_CTX and
+ * a strength.
+ */
+int RAND_bytes_ex(OSSL_LIB_CTX *ctx, unsigned char *buf, size_t num,
+                  unsigned int strength);
+
 # ifndef OPENSSL_NO_DEPRECATED_1_1_0
 OSSL_DEPRECATEDIN_1_1_0 int RAND_pseudo_bytes(unsigned char *buf, int num);
 # endif

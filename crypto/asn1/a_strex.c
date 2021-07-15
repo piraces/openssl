@@ -1,5 +1,5 @@
 /*
- * Copyright 2000-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2000-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -32,7 +32,7 @@
                   ASN1_STRFLGS_ESC_MSB)
 
 /*
- * Three IO functions for sending data to memory, a BIO and and a FILE
+ * Three IO functions for sending data to memory, a BIO and a FILE
  * pointer.
  */
 static int send_bio_chars(void *arg, const void *buf, int len)
@@ -280,6 +280,8 @@ static int do_dump(unsigned long lflags, char_io *io_ch, void *arg,
     t.type = str->type;
     t.value.ptr = (char *)str;
     der_len = i2d_ASN1_TYPE(&t, NULL);
+    if (der_len <= 0)
+        return -1;
     if ((der_buf = OPENSSL_malloc(der_len)) == NULL) {
         ERR_raise(ERR_LIB_ASN1, ERR_R_MALLOC_FAILURE);
         return -1;

@@ -62,8 +62,8 @@ static int pkcs12kdf_derive(const unsigned char *pass, size_t passlen,
         ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
         goto end;
     }
-    vi = EVP_MD_block_size(md_type);
-    ui = EVP_MD_size(md_type);
+    vi = EVP_MD_get_block_size(md_type);
+    ui = EVP_MD_get_size(md_type);
     if (ui < 0 || vi <= 0) {
         ERR_raise(ERR_LIB_PROV, PROV_R_INVALID_DIGEST_SIZE);
         goto end;
@@ -224,6 +224,9 @@ static int kdf_pkcs12_set_ctx_params(void *vctx, const OSSL_PARAM params[])
     const OSSL_PARAM *p;
     KDF_PKCS12 *ctx = vctx;
     OSSL_LIB_CTX *provctx = PROV_LIBCTX_OF(ctx->provctx);
+
+    if (params == NULL)
+        return 1;
 
     if (!ossl_prov_digest_load_from_params(&ctx->digest, params, provctx))
         return 0;

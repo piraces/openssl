@@ -1,5 +1,5 @@
 /*
- * Copyright 2008-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2008-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -142,6 +142,9 @@ static int ndef_prefix_free(BIO *b, unsigned char **pbuf, int *plen,
         return 0;
 
     ndef_aux = *(NDEF_SUPPORT **)parg;
+
+    if (ndef_aux == NULL)
+        return 0;
 
     OPENSSL_free(ndef_aux->derbuf);
 

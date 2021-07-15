@@ -281,7 +281,7 @@ static int x942kdf_hash_kdm(const EVP_MD *kdf_md,
         return 0;
     }
 
-    hlen = EVP_MD_size(kdf_md);
+    hlen = EVP_MD_get_size(kdf_md);
     if (hlen <= 0)
         return 0;
     out_len = (size_t)hlen;
@@ -388,7 +388,7 @@ static size_t x942kdf_size(KDF_X942 *ctx)
         ERR_raise(ERR_LIB_PROV, PROV_R_MISSING_MESSAGE_DIGEST);
         return 0;
     }
-    len = EVP_MD_size(md);
+    len = EVP_MD_get_size(md);
     return (len <= 0) ? 0 : (size_t)len;
 }
 
@@ -472,6 +472,8 @@ static int x942kdf_set_ctx_params(void *vctx, const OSSL_PARAM params[])
     const char *propq = NULL;
     size_t id;
 
+    if (params == NULL)
+        return 1;
     if (!ossl_prov_digest_load_from_params(&ctx->digest, params, provctx))
         return 0;
 

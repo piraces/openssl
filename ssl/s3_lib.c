@@ -3636,9 +3636,16 @@ long ssl3_ctrl(SSL *s, int cmd, long larg, void *parg)
             return id;
         }
     case SSL_CTRL_GET_NEGOTIATED_GROUP:
-        ret = tls1_group_id2nid(s->s3.group_id, 1);
-        break;
+        {
+            unsigned int id;
 
+            if (SSL_IS_TLS13(s) && s->s3.did_kex)
+                id = s->s3.group_id;
+            else
+                id = s->session->kex_group;
+            ret = tls1_group_id2nid(id, 1);
+            break;
+        }
     case SSL_CTRL_SET_SIGALGS:
         return tls1_set_sigalgs(s->cert, parg, larg, 0);
 
@@ -4275,12 +4282,8 @@ const SSL_CIPHER *ssl3_choose_cipher(SSL *s, STACK_OF(SSL_CIPHER) *clnt,
             if (prefer_sha256) {
                 const SSL_CIPHER *tmp = sk_SSL_CIPHER_value(allow, ii);
 
-                /*
-                 * TODO: When there are no more legacy digests we can just use
-                 * OSSL_DIGEST_NAME_SHA2_256 instead of calling OBJ_nid2sn
-                 */
                 if (EVP_MD_is_a(ssl_md(s->ctx, tmp->algorithm2),
-                                       OBJ_nid2sn(NID_sha256))) {
+                                       OSSL_DIGEST_NAME_SHA2_256)) {
                     ret = tmp;
                     break;
                 }
@@ -4549,9 +4552,9 @@ int ssl_fill_hello_random(SSL *s, int server, unsigned char *result, size_t len,
         unsigned char *p = result;
 
         l2n(Time, p);
-        ret = RAND_bytes_ex(s->ctx->libctx, p, len - 4);
+        ret = RAND_bytes_ex(s->ctx->libctx, p, len - 4, 0);
     } else {
-        ret = RAND_bytes_ex(s->ctx->libctx, result, len);
+        ret = RAND_bytes_ex(s->ctx->libctx, result, len, 0);
     }
 
     if (ret > 0) {
@@ -4603,6 +4606,7 @@ int ssl_generate_master_secret(SSL *s, unsigned char *pms, size_t pmslen,
 
         OPENSSL_clear_free(s->s3.tmp.psk, psklen);
         s->s3.tmp.psk = NULL;
+        s->s3.tmp.psklen = 0;
         if (!s->method->ssl3_enc->generate_master_secret(s,
                     s->session->master_key, pskpms, pskpmslen,
                     &s->session->master_key_length)) {
@@ -4632,8 +4636,10 @@ int ssl_generate_master_secret(SSL *s, unsigned char *pms, size_t pmslen,
         else
             OPENSSL_cleanse(pms, pmslen);
     }
-    if (s->server == 0)
+    if (s->server == 0) {
         s->s3.tmp.pms = NULL;
+        s->s3.tmp.pmslen = 0;
+    }
     return ret;
 }
 
@@ -4827,7 +4833,7 @@ int ssl_decapsulate(SSL *s, EVP_PKEY *privkey,
 
     pctx = EVP_PKEY_CTX_new_from_pkey(s->ctx->libctx, privkey, s->ctx->propq);
 
-    if (EVP_PKEY_decapsulate_init(pctx) <= 0
+    if (EVP_PKEY_decapsulate_init(pctx, NULL) <= 0
             || EVP_PKEY_decapsulate(pctx, NULL, &pmslen, ct, ctlen) <= 0) {
         SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
         goto err;
@@ -4877,7 +4883,7 @@ int ssl_encapsulate(SSL *s, EVP_PKEY *pubkey,
 
     pctx = EVP_PKEY_CTX_new_from_pkey(s->ctx->libctx, pubkey, s->ctx->propq);
 
-    if (EVP_PKEY_encapsulate_init(pctx) <= 0
+    if (EVP_PKEY_encapsulate_init(pctx, NULL) <= 0
             || EVP_PKEY_encapsulate(pctx, NULL, &ctlen, NULL, &pmslen) <= 0
             || pmslen == 0 || ctlen == 0) {
         SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);

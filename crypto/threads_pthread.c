@@ -24,6 +24,8 @@
 #  include <unistd.h>
 #endif
 
+# include <assert.h>
+
 # ifdef PTHREAD_RWLOCK_INITIALIZER
 #  define USE_RWLOCK
 # endif
@@ -55,10 +57,14 @@ CRYPTO_RWLOCK *CRYPTO_THREAD_lock_new(void)
      * We don't use recursive mutexes, but try to catch errors if we do.
      */
     pthread_mutexattr_init(&attr);
-#  if defined(NDEBUG) && defined(PTHREAD_MUTEX_ERRORCHECK)
+#  if !defined (__TANDEM) && !defined (_SPT_MODEL_)
+#   if !defined(NDEBUG) && !defined(OPENSSL_NO_MUTEX_ERRORCHECK)
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK);
-# else
+#   else
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_NORMAL);
+#   endif
+#  else
+    /* The SPT Thread Library does not define MUTEX attributes. */
 #  endif
 
     if (pthread_mutex_init(lock, &attr) != 0) {
@@ -73,7 +79,7 @@ CRYPTO_RWLOCK *CRYPTO_THREAD_lock_new(void)
     return lock;
 }
 
-int CRYPTO_THREAD_read_lock(CRYPTO_RWLOCK *lock)
+__owur int CRYPTO_THREAD_read_lock(CRYPTO_RWLOCK *lock)
 {
 # ifdef USE_RWLOCK
     if (pthread_rwlock_rdlock(lock) != 0)
@@ -88,7 +94,7 @@ int CRYPTO_THREAD_read_lock(CRYPTO_RWLOCK *lock)
     return 1;
 }
 
-int CRYPTO_THREAD_write_lock(CRYPTO_RWLOCK *lock)
+__owur int CRYPTO_THREAD_write_lock(CRYPTO_RWLOCK *lock)
 {
 # ifdef USE_RWLOCK
     if (pthread_rwlock_wrlock(lock) != 0)

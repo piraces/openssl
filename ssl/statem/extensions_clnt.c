@@ -234,11 +234,17 @@ EXT_RETURN tls_construct_ctos_supported_groups(SSL *s, WPACKET *pkt,
         }
     }
     if (!WPACKET_close(pkt) || !WPACKET_close(pkt)) {
-        if (added == 0 || (tls13added == 0 && max_version == TLS1_3_VERSION))
+        if (added == 0)
             SSLfatal_data(s, SSL_AD_INTERNAL_ERROR, SSL_R_NO_SUITABLE_GROUPS,
                           "No groups enabled for max supported SSL/TLS version");
         else
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
+        return EXT_RETURN_FAIL;
+    }
+
+    if (tls13added == 0 && max_version == TLS1_3_VERSION) {
+        SSLfatal_data(s, SSL_AD_INTERNAL_ERROR, SSL_R_NO_SUITABLE_GROUPS,
+                      "No groups enabled for max supported SSL/TLS version");
         return EXT_RETURN_FAIL;
     }
 
@@ -623,7 +629,7 @@ static int add_key_share(SSL *s, WPACKET *pkt, unsigned int curve_id)
     }
 
     /*
-     * TODO(TLS1.3): When changing to send more than one key_share we're
+     * When changing to send more than one key_share we're
      * going to need to be able to save more than one EVP_PKEY. For now
      * we reuse the existing tmp.pkey
      */
@@ -662,8 +668,8 @@ EXT_RETURN tls_construct_ctos_key_share(SSL *s, WPACKET *pkt,
     tls1_get_supported_groups(s, &pgroups, &num_groups);
 
     /*
-     * TODO(TLS1.3): Make the number of key_shares sent configurable. For
-     * now, just send one
+     * Make the number of key_shares sent configurable. For
+     * now, we just send one
      */
     if (s->s3.group_id != 0) {
         curve_id = s->s3.group_id;
@@ -804,6 +810,7 @@ EXT_RETURN tls_construct_ctos_early_data(SSL *s, WPACKET *pkt,
         OPENSSL_free(s->psksession_id);
         s->psksession_id = OPENSSL_memdup(id, idlen);
         if (s->psksession_id == NULL) {
+            s->psksession_id_len = 0;
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
             return EXT_RETURN_FAIL;
         }
@@ -930,7 +937,7 @@ EXT_RETURN tls_construct_ctos_padding(SSL *s, WPACKET *pkt,
              * length.
              */
             hlen +=  PSK_PRE_BINDER_OVERHEAD + s->session->ext.ticklen
-                     + EVP_MD_size(md);
+                     + EVP_MD_get_size(md);
         }
     }
 
@@ -1061,7 +1068,7 @@ EXT_RETURN tls_construct_ctos_psk(SSL *s, WPACKET *pkt, unsigned int context,
          */
         agems += s->session->ext.tick_age_add;
 
-        reshashsize = EVP_MD_size(mdres);
+        reshashsize = EVP_MD_get_size(mdres);
         s->ext.tick_identity++;
         dores = 1;
     }
@@ -1090,7 +1097,7 @@ EXT_RETURN tls_construct_ctos_psk(SSL *s, WPACKET *pkt, unsigned int context,
             return EXT_RETURN_FAIL;
         }
 
-        pskhashsize = EVP_MD_size(mdpsk);
+        pskhashsize = EVP_MD_get_size(mdpsk);
     }
 
     /* Create the extension, but skip over the binder for now */
@@ -1331,6 +1338,7 @@ int tls_parse_stoc_ec_pt_formats(SSL *s, PACKET *pkt, unsigned int context,
         OPENSSL_free(s->ext.peer_ecpointformats);
         s->ext.peer_ecpointformats = OPENSSL_malloc(ecpointformats_len);
         if (s->ext.peer_ecpointformats == NULL) {
+            s->ext.peer_ecpointformats_len = 0;
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
             return 0;
         }
@@ -1379,7 +1387,6 @@ int tls_parse_stoc_status_request(SSL *s, PACKET *pkt, unsigned int context,
 {
     if (context == SSL_EXT_TLS1_3_CERTIFICATE_REQUEST) {
         /* We ignore this if the server sends a CertificateRequest */
-        /* TODO(TLS1.3): Add support for this */
         return 1;
     }
 
@@ -1421,7 +1428,6 @@ int tls_parse_stoc_sct(SSL *s, PACKET *pkt, unsigned int context, X509 *x,
 {
     if (context == SSL_EXT_TLS1_3_CERTIFICATE_REQUEST) {
         /* We ignore this if the server sends it in a CertificateRequest */
-        /* TODO(TLS1.3): Add support for this */
         return 1;
     }
 
@@ -1440,8 +1446,12 @@ int tls_parse_stoc_sct(SSL *s, PACKET *pkt, unsigned int context, X509 *x,
         s->ext.scts_len = (uint16_t)size;
         if (size > 0) {
             s->ext.scts = OPENSSL_malloc(size);
-            if (s->ext.scts == NULL
-                    || !PACKET_copy_bytes(pkt, s->ext.scts, size)) {
+            if (s->ext.scts == NULL) {
+                s->ext.scts_len = 0;
+                SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_MALLOC_FAILURE);
+                return 0;
+            }
+            if (!PACKET_copy_bytes(pkt, s->ext.scts, size)) {
                 SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
                 return 0;
             }
@@ -1535,6 +1545,7 @@ int tls_parse_stoc_npn(SSL *s, PACKET *pkt, unsigned int context, X509 *x,
     OPENSSL_free(s->ext.npn);
     s->ext.npn = OPENSSL_malloc(selected_len);
     if (s->ext.npn == NULL) {
+        s->ext.npn_len = 0;
         SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
         return 0;
     }
@@ -1572,6 +1583,7 @@ int tls_parse_stoc_alpn(SSL *s, PACKET *pkt, unsigned int context, X509 *x,
     OPENSSL_free(s->s3.alpn_selected);
     s->s3.alpn_selected = OPENSSL_malloc(len);
     if (s->s3.alpn_selected == NULL) {
+        s->s3.alpn_selected_len = 0;
         SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
         return 0;
     }
@@ -1600,6 +1612,7 @@ int tls_parse_stoc_alpn(SSL *s, PACKET *pkt, unsigned int context, X509 *x,
         s->session->ext.alpn_selected =
             OPENSSL_memdup(s->s3.alpn_selected, s->s3.alpn_selected_len);
         if (s->session->ext.alpn_selected == NULL) {
+            s->session->ext.alpn_selected_len = 0;
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
             return 0;
         }
@@ -1778,6 +1791,28 @@ int tls_parse_stoc_key_share(SSL *s, PACKET *pkt, unsigned int context, X509 *x,
         SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_BAD_KEY_SHARE);
         return 0;
     }
+    /* Retain this group in the SSL_SESSION */
+    if (!s->hit) {
+        s->session->kex_group = group_id;
+    } else if (group_id != s->session->kex_group) {
+        /*
+         * If this is a resumption but changed what group was used, we need
+         * to record the new group in the session, but the session is not
+         * a new session and could be in use by other threads.  So, make
+         * a copy of the session to record the new information so that it's
+         * useful for any sessions resumed from tickets issued on this
+         * connection.
+         */
+        SSL_SESSION *new_sess;
+
+        if ((new_sess = ssl_session_dup(s->session, 0)) == NULL) {
+            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_MALLOC_FAILURE);
+            return 0;
+        }
+        SSL_SESSION_free(s->session);
+        s->session = new_sess;
+        s->session->kex_group = group_id;
+    }
 
     if ((ginf = tls1_group_id_lookup(s->ctx, group_id)) == NULL) {
         SSLfatal(s, SSL_AD_ILLEGAL_PARAMETER, SSL_R_BAD_KEY_SHARE);
@@ -1821,6 +1856,7 @@ int tls_parse_stoc_key_share(SSL *s, PACKET *pkt, unsigned int context, X509 *x,
             return 0;
         }
     }
+    s->s3.did_kex = 1;
 #endif
 
     return 1;

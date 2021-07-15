@@ -58,11 +58,11 @@
 
 #include "testutil.h"
 
-typedef int PEM_write_bio_of_void_protected(BIO *out, void *obj,
+typedef int PEM_write_bio_of_void_protected(BIO *out, const void *obj,
                                             const EVP_CIPHER *enc,
                                             unsigned char *kstr, int klen,
                                             pem_password_cb *cb, void *u);
-typedef int PEM_write_bio_of_void_unprotected(BIO *out, void *obj);
+typedef int PEM_write_bio_of_void_unprotected(BIO *out, const void *obj);
 typedef void *PEM_read_bio_of_void(BIO *out, void **obj,
                                    pem_password_cb *cb, void *u);
 typedef int EVP_PKEY_print_fn(BIO *out, const EVP_PKEY *pkey,
@@ -249,7 +249,7 @@ static EVP_PKEY *make_key(const char *type,
             || EVP_PKEY_paramgen_init(ctx) <= 0
             || (gen_template_params[0].key != NULL
                 && EVP_PKEY_CTX_set_params(ctx, gen_template_params_noconst) <= 0)
-            || EVP_PKEY_gen(ctx, &template) <= 0))
+            || EVP_PKEY_generate(ctx, &template) <= 0))
         goto end;
     EVP_PKEY_CTX_free(ctx);
 
@@ -289,12 +289,14 @@ static int test_membio_str_eq(BIO *bio_provided, BIO *bio_legacy)
     long len_provided = BIO_get_mem_data(bio_provided, &str_provided);
     long len_legacy = BIO_get_mem_data(bio_legacy, &str_legacy);
 
-    return TEST_strn2_eq(str_provided, len_provided,
-                         str_legacy, len_legacy);
+    return TEST_long_ge(len_legacy, 0)
+           && TEST_long_ge(len_provided, 0)
+           && TEST_strn2_eq(str_provided, len_provided,
+                            str_legacy, len_legacy);
 }
 
 static int test_protected_PEM(const char *keytype, int evp_type,
-                              void *legacy_key,
+                              const void *legacy_key,
                               PEM_write_bio_of_void_protected *pem_write_bio,
                               PEM_read_bio_of_void *pem_read_bio,
                               EVP_PKEY_eq_fn *evp_pkey_eq,
@@ -362,7 +364,7 @@ static int test_protected_PEM(const char *keytype, int evp_type,
 }
 
 static int test_unprotected_PEM(const char *keytype, int evp_type,
-                                void *legacy_key,
+                                const void *legacy_key,
                                 PEM_write_bio_of_void_unprotected *pem_write_bio,
                                 PEM_read_bio_of_void *pem_read_bio,
                                 EVP_PKEY_eq_fn *evp_pkey_eq,
@@ -429,7 +431,7 @@ static int test_unprotected_PEM(const char *keytype, int evp_type,
 }
 
 static int test_DER(const char *keytype, int evp_type,
-                    void *legacy_key, i2d_of_void *i2d, d2i_of_void *d2i,
+                    const void *legacy_key, i2d_of_void *i2d, d2i_of_void *d2i,
                     EVP_PKEY_eq_fn *evp_pkey_eq,
                     EVP_PKEY_print_fn *evp_pkey_print,
                     EVP_PKEY *provided_pkey, int selection,
@@ -506,7 +508,7 @@ static int test_key(int idx)
     int ok = 0;
     size_t i;
     EVP_PKEY *pkey = NULL, *downgraded_pkey = NULL;
-    void *legacy_obj = NULL;
+    const void *legacy_obj = NULL;
 
     /* Get the test data */
     if (!TEST_ptr(test_stanza = &test_stanzas[idx])
@@ -517,7 +519,7 @@ static int test_key(int idx)
     if (!TEST_ptr(pkey = key->key)
         || !TEST_true(evp_pkey_copy_downgraded(&downgraded_pkey, pkey))
         || !TEST_ptr(downgraded_pkey)
-        || !TEST_int_eq(EVP_PKEY_id(downgraded_pkey), key->evp_type)
+        || !TEST_int_eq(EVP_PKEY_get_id(downgraded_pkey), key->evp_type)
         || !TEST_ptr(legacy_obj = EVP_PKEY_get0(downgraded_pkey)))
         goto end;
 
@@ -673,19 +675,48 @@ static int test_key(int idx)
     return ok;
 }
 
+#define USAGE "rsa-key.pem dh-key.pem\n"
+OPT_TEST_DECLARE_USAGE(USAGE)
+
 int setup_tests(void)
 {
     size_t i;
 
+    if (!test_skip_common_options()) {
+        TEST_error("Error parsing test options\n");
+        return 0;
+    }
+    if (test_get_argument_count() != 2) {
+        TEST_error("usage: endecoder_legacy_test %s", USAGE);
+        return 0;
+    }
+
     TEST_info("Generating keys...");
 
     for (i = 0; i < OSSL_NELEM(keys); i++) {
+#ifndef OPENSSL_NO_DH
+        if (strcmp(keys[i].keytype, "DH") == 0) {
+            if (!TEST_ptr(keys[i].key =
+                          load_pkey_pem(test_get_argument(1), NULL)))
+                return  0;
+            continue;
+        }
+#endif
+#ifndef OPENSSL_NO_DEPRECATED_3_0
+        if (strcmp(keys[i].keytype, "RSA") == 0) {
+            if (!TEST_ptr(keys[i].key =
+                          load_pkey_pem(test_get_argument(0), NULL)))
+                return  0;
+            continue;
+        }
+#endif
+        TEST_info("Generating %s key...", keys[i].keytype);
         if (!TEST_ptr(keys[i].key =
                       make_key(keys[i].keytype, keys[i].template_params)))
             return 0;
     }
 
-    TEST_info("Generating key... done");
+    TEST_info("Generating keys done");
 
     ADD_ALL_TESTS(test_key, OSSL_NELEM(test_stanzas));
     return 1;

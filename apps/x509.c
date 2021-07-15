@@ -39,12 +39,12 @@ static int purpose_print(BIO *bio, X509 *cert, X509_PURPOSE *pt);
 static int print_x509v3_exts(BIO *bio, X509 *x, const char *ext_names);
 
 typedef enum OPTION_choice {
-    OPT_ERR = -1, OPT_EOF = 0, OPT_HELP,
+    OPT_COMMON,
     OPT_INFORM, OPT_OUTFORM, OPT_KEYFORM, OPT_REQ, OPT_CAFORM,
     OPT_CAKEYFORM, OPT_VFYOPT, OPT_SIGOPT, OPT_DAYS, OPT_PASSIN, OPT_EXTFILE,
-    OPT_EXTENSIONS, OPT_IN, OPT_OUT, OPT_SIGNKEY, OPT_CA, OPT_CAKEY,
+    OPT_EXTENSIONS, OPT_IN, OPT_OUT, OPT_KEY, OPT_SIGNKEY, OPT_CA, OPT_CAKEY,
     OPT_CASERIAL, OPT_SET_SERIAL, OPT_NEW, OPT_FORCE_PUBKEY, OPT_SUBJ,
-    OPT_ADDTRUST, OPT_ADDREJECT, OPT_SETALIAS, OPT_CERTOPT, OPT_NAMEOPT,
+    OPT_ADDTRUST, OPT_ADDREJECT, OPT_SETALIAS, OPT_CERTOPT, OPT_DATEOPT, OPT_NAMEOPT,
     OPT_EMAIL, OPT_OCSP_URI, OPT_SERIAL, OPT_NEXT_SERIAL,
     OPT_MODULUS, OPT_PUBKEY, OPT_X509TOREQ, OPT_TEXT, OPT_HASH,
     OPT_ISSUER_HASH, OPT_SUBJECT, OPT_ISSUER, OPT_FINGERPRINT, OPT_DATES,
@@ -72,8 +72,10 @@ const OPTIONS x509_options[] = {
     {"inform", OPT_INFORM, 'f',
      "CSR input file format (DER or PEM) - default PEM"},
     {"vfyopt", OPT_VFYOPT, 's', "CSR verification parameter in n:v form"},
+    {"key", OPT_KEY, 's',
+     "Key to be used in certificate or cert request"},
     {"signkey", OPT_SIGNKEY, 's',
-     "Key used to self-sign certificate or cert request"},
+     "Same as -key"},
     {"keyform", OPT_KEYFORM, 'E',
      "Key input format (ENGINE, other values ignored)"},
     {"out", OPT_OUT, '>', "Output file - default stdout"},
@@ -85,6 +87,7 @@ const OPTIONS x509_options[] = {
 
     OPT_SECTION("Certificate printing"),
     {"text", OPT_TEXT, '-', "Print the certificate in text form"},
+    {"dateopt", OPT_DATEOPT, 's', "Datetime format used for printing. (rfc_822/iso_8601). Default is rfc_822."},
     {"certopt", OPT_CERTOPT, 's', "Various certificate text printing options"},
     {"fingerprint", OPT_FINGERPRINT, '-', "Print the certificate fingerprint"},
     {"alias", OPT_ALIAS, '-', "Print certificate alias"},
@@ -149,7 +152,7 @@ const OPTIONS x509_options[] = {
 
     OPT_SECTION("Micro-CA"),
     {"CA", OPT_CA, '<',
-     "Use the given CA certificate, conflicts with -signkey"},
+     "Use the given CA certificate, conflicts with -key"},
     {"CAform", OPT_CAFORM, 'F', "CA cert format (PEM/DER/P12); has no effect"},
     {"CAkey", OPT_CAKEY, 's', "The corresponding CA key; default is -CA arg"},
     {"CAkeyform", OPT_CAKEYFORM, 'E',
@@ -187,7 +190,7 @@ static void warn_copying(ASN1_OBJECT *excluded, const char *names)
                    sn);
 }
 
-static X509_REQ *x509_to_req(X509 *cert, EVP_PKEY *pkey, const EVP_MD *digest,
+static X509_REQ *x509_to_req(X509 *cert, EVP_PKEY *pkey, const char *digest,
                              STACK_OF(OPENSSL_STRING) *sigopts,
                              int ext_copy, const char *names)
 {
@@ -244,10 +247,10 @@ int x509_main(int argc, char **argv)
     CONF *extconf = NULL;
     int ext_copy = EXT_COPY_UNSET;
     X509V3_CTX ext_ctx;
-    EVP_PKEY *signkey = NULL, *CAkey = NULL, *pubkey = NULL;
+    EVP_PKEY *privkey = NULL, *CAkey = NULL, *pubkey = NULL;
     EVP_PKEY *pkey;
     int newcert = 0;
-    char *subj = NULL, *digestname = NULL;
+    char *subj = NULL, *digest = NULL;
     X509_NAME *fsubj = NULL;
     const unsigned long chtype = MBSTRING_ASC;
     const int multirdn = 1;
@@ -256,18 +259,18 @@ int x509_main(int argc, char **argv)
     X509 *x = NULL, *xca = NULL, *issuer_cert;
     X509_REQ *req = NULL, *rq = NULL;
     X509_STORE *ctx = NULL;
-    const EVP_MD *digest = NULL;
     char *CAkeyfile = NULL, *CAserial = NULL, *pubkeyfile = NULL, *alias = NULL;
     char *checkhost = NULL, *checkemail = NULL, *checkip = NULL;
     char *ext_names = NULL;
     char *extsect = NULL, *extfile = NULL, *passin = NULL, *passinarg = NULL;
-    char *infile = NULL, *outfile = NULL, *signkeyfile = NULL, *CAfile = NULL;
+    char *infile = NULL, *outfile = NULL, *privkeyfile = NULL, *CAfile = NULL;
     char *prog;
     int days = UNSET_DAYS; /* not explicitly set */
     int x509toreq = 0, modulus = 0, print_pubkey = 0, pprint = 0;
-    int CAformat = FORMAT_PEM, CAkeyformat = FORMAT_PEM;
+    int CAformat = FORMAT_UNDEF, CAkeyformat = FORMAT_UNDEF;
+    unsigned long dateopt = ASN1_DTFLGS_RFC822;
     int fingerprint = 0, reqfile = 0, checkend = 0;
-    int informat = FORMAT_PEM, outformat = FORMAT_PEM, keyformat = FORMAT_PEM;
+    int informat = FORMAT_UNDEF, outformat = FORMAT_PEM, keyformat = FORMAT_UNDEF;
     int next_serial = 0, subject_hash = 0, issuer_hash = 0, ocspid = 0;
     int noout = 0, CA_createserial = 0, email = 0;
     int ocsp_uri = 0, trustout = 0, clrtrust = 0, clrreject = 0, aliasout = 0;
@@ -329,6 +332,14 @@ int x509_main(int argc, char **argv)
         case OPT_REQ:
             reqfile = 1;
             break;
+
+        case OPT_DATEOPT:
+            if (!set_dateopt(&dateopt, opt_arg())) {
+                BIO_printf(bio_err,
+                           "Invalid date format: %s\n", opt_arg());
+                goto end;
+            }
+            break;
         case OPT_COPY_EXTENSIONS:
             if (!set_ext_copy(&ext_copy, opt_arg())) {
                 BIO_printf(bio_err,
@@ -374,8 +385,9 @@ int x509_main(int argc, char **argv)
         case OPT_EXTENSIONS:
             extsect = opt_arg();
             break;
+        case OPT_KEY:
         case OPT_SIGNKEY:
-            signkeyfile = opt_arg();
+            privkeyfile = opt_arg();
             break;
         case OPT_CA:
             CAfile = opt_arg();
@@ -541,11 +553,11 @@ int x509_main(int argc, char **argv)
         case OPT_CHECKEND:
             checkend = 1;
             {
-                intmax_t temp = 0;
-                if (!opt_imax(opt_arg(), &temp))
+                ossl_intmax_t temp = 0;
+                if (!opt_intmax(opt_arg(), &temp))
                     goto opthelp;
                 checkoffset = (time_t)temp;
-                if ((intmax_t)checkoffset != temp) {
+                if ((ossl_intmax_t)checkoffset != temp) {
                     BIO_printf(bio_err, "%s: Checkend time out of range %s\n",
                                prog, opt_arg());
                     goto opthelp;
@@ -565,7 +577,7 @@ int x509_main(int argc, char **argv)
             preserve_dates = 1;
             break;
         case OPT_MD:
-            digestname = opt_unknown();
+            digest = opt_unknown();
             break;
         }
     }
@@ -575,11 +587,9 @@ int x509_main(int argc, char **argv)
     if (argc != 0)
         goto opthelp;
 
-    app_RAND_load();
-    if (digestname != NULL) {
-        if (!opt_md(digestname, &digest))
-            goto opthelp;
-    }
+    if (!app_RAND_load())
+        goto end;
+
     if (preserve_dates && days != UNSET_DAYS) {
         BIO_printf(bio_err, "Cannot use -preserve_dates with -days option\n");
         goto end;
@@ -605,9 +615,9 @@ int x509_main(int argc, char **argv)
                    "The -req option cannot be used with -new\n");
         goto end;
     }
-    if (signkeyfile != NULL) {
-        signkey = load_key(signkeyfile, keyformat, 0, passin, e, "private key");
-        if (signkey == NULL)
+    if (privkeyfile != NULL) {
+        privkey = load_key(privkeyfile, keyformat, 0, passin, e, "private key");
+        if (privkey == NULL)
             goto end;
     }
     if (pubkeyfile != NULL) {
@@ -622,9 +632,9 @@ int x509_main(int argc, char **argv)
                        "The -new option requires a subject to be set using -subj\n");
             goto end;
         }
-        if (signkeyfile == NULL && pubkeyfile == NULL) {
+        if (privkeyfile == NULL && pubkeyfile == NULL) {
             BIO_printf(bio_err,
-                       "The -new option without -signkey requires using -force_pubkey\n");
+                       "The -new option without -key requires using -force_pubkey\n");
             goto end;
         }
     }
@@ -635,8 +645,8 @@ int x509_main(int argc, char **argv)
     if (CAkeyfile == NULL)
         CAkeyfile = CAfile;
     if (CAfile != NULL) {
-        if (signkeyfile != NULL) {
-            BIO_printf(bio_err, "Cannot use both -signkey and -CA option\n");
+        if (privkeyfile != NULL) {
+            BIO_printf(bio_err, "Cannot use both -key and -CA option\n");
             goto end;
         }
     } else if (CAkeyfile != NULL) {
@@ -697,9 +707,9 @@ int x509_main(int argc, char **argv)
             BIO_printf(bio_err,
                        "Warning: ignoring -preserve_dates option with -req or -new\n");
         preserve_dates = 0;
-        if (signkeyfile == NULL && CAkeyfile == NULL) {
+        if (privkeyfile == NULL && CAkeyfile == NULL) {
             BIO_printf(bio_err,
-                       "We need a private key to sign with, use -signkey or -CAkey or -CA with private key\n");
+                       "We need a private key to sign with, use -key or -CAkey or -CA with private key\n");
             goto end;
         }
         if ((x = X509_new_ex(app_get0_libctx(), app_get0_propq())) == NULL)
@@ -719,7 +729,7 @@ int x509_main(int argc, char **argv)
             }
         }
     } else {
-        x = load_cert_pass(infile, 1, passin, "certificate");
+        x = load_cert_pass(infile, informat, 1, passin, "certificate");
         if (x == NULL)
             goto end;
     }
@@ -727,14 +737,14 @@ int x509_main(int argc, char **argv)
         && !X509_set_subject_name(x, fsubj != NULL ? fsubj :
                                   X509_REQ_get_subject_name(req)))
         goto end;
-    if ((pubkey != NULL || signkey != NULL || req != NULL)
+    if ((pubkey != NULL || privkey != NULL || req != NULL)
         && !X509_set_pubkey(x, pubkey != NULL ? pubkey :
-                            signkey != NULL ? signkey :
+                            privkey != NULL ? privkey :
                             X509_REQ_get0_pubkey(req)))
         goto end;
 
     if (CAfile != NULL) {
-        xca = load_cert_pass(CAfile, 1, passin, "CA certificate");
+        xca = load_cert_pass(CAfile, CAformat, 1, passin, "CA certificate");
         if (xca == NULL)
             goto end;
     }
@@ -745,7 +755,6 @@ int x509_main(int argc, char **argv)
 
     if (!noout || text || next_serial)
         OBJ_create("2.99999.3", "SET.ex3", "SET x509v3 extension 3");
-    /* TODO: why is this strange object created (and no error checked)? */
 
     if (alias)
         X509_alias_set1(x, (unsigned char *)alias, -1);
@@ -787,7 +796,7 @@ int x509_main(int argc, char **argv)
     if (sno != NULL && !X509_set_serialNumber(x, sno))
         goto end;
 
-    if (reqfile || newcert || signkey != NULL || CAfile != NULL) {
+    if (reqfile || newcert || privkey != NULL || CAfile != NULL) {
         if (!preserve_dates && !set_cert_times(x, NULL, NULL, days))
             goto end;
         if (!X509_set_issuer_name(x, X509_get_subject_name(issuer_cert)))
@@ -813,15 +822,15 @@ int x509_main(int argc, char **argv)
     }
 
     if (x509toreq) { /* also works in conjunction with -req */
-        if (signkey == NULL) {
-            BIO_printf(bio_err, "Must specify request key using -signkey\n");
+        if (privkey == NULL) {
+            BIO_printf(bio_err, "Must specify request key using -key\n");
             goto end;
         }
         if (clrext && ext_copy != EXT_COPY_NONE) {
             BIO_printf(bio_err, "Must not use -clrext together with -copy_extensions\n");
             goto end;
         }
-        if ((rq = x509_to_req(x, signkey, digest, sigopts,
+        if ((rq = x509_to_req(x, privkey, digest, sigopts,
                               ext_copy, ext_names)) == NULL)
             goto end;
         if (!noout) {
@@ -838,8 +847,8 @@ int x509_main(int argc, char **argv)
             }
         }
         noout = 1;
-    } else if (signkey != NULL) {
-        if (!do_X509_sign(x, signkey, digest, sigopts, &ext_ctx))
+    } else if (privkey != NULL) {
+        if (!do_X509_sign(x, privkey, digest, sigopts, &ext_ctx))
             goto end;
     } else if (CAfile != NULL) {
         if (!reqfile && !newcert) { /* certificate should be self-signed */
@@ -934,14 +943,14 @@ int x509_main(int argc, char **argv)
         } else if (i == modulus) {
             BIO_printf(out, "Modulus=");
             if (EVP_PKEY_is_a(pkey, "RSA")) {
-                BIGNUM *n;
+                BIGNUM *n = NULL;
 
                 /* Every RSA key has an 'n' */
                 EVP_PKEY_get_bn_param(pkey, "n", &n);
                 BN_print(out, n);
                 BN_free(n);
             } else if (EVP_PKEY_is_a(pkey, "DSA")) {
-                BIGNUM *dsapub;
+                BIGNUM *dsapub = NULL;
 
                 /* Every DSA key has a 'pub' */
                 EVP_PKEY_get_bn_param(pkey, "pub", &dsapub);
@@ -957,25 +966,35 @@ int x509_main(int argc, char **argv)
             X509_print_ex(out, x, get_nameopt(), certflag);
         } else if (i == startdate) {
             BIO_puts(out, "notBefore=");
-            ASN1_TIME_print(out, X509_get0_notBefore(x));
+            ASN1_TIME_print_ex(out, X509_get0_notBefore(x), dateopt);
             BIO_puts(out, "\n");
         } else if (i == enddate) {
             BIO_puts(out, "notAfter=");
-            ASN1_TIME_print(out, X509_get0_notAfter(x));
+            ASN1_TIME_print_ex(out, X509_get0_notAfter(x), dateopt);
             BIO_puts(out, "\n");
         } else if (i == fingerprint) {
             unsigned int n;
             unsigned char md[EVP_MAX_MD_SIZE];
-            const EVP_MD *fdig = digest;
+            const char *fdigname = digest;
+            EVP_MD *fdig;
+            int digres;
 
-            if (fdig == NULL)
-                fdig = EVP_sha1();
+            if (fdigname == NULL)
+                fdigname = "SHA1";
 
-            if (!X509_digest(x, fdig, md, &n)) {
+            if ((fdig = EVP_MD_fetch(app_get0_libctx(), fdigname,
+                                     app_get0_propq())) == NULL) {
+                BIO_printf(bio_err, "Unknown digest\n");
+                goto end;
+            }
+            digres = X509_digest(x, fdig, md, &n);
+            EVP_MD_free(fdig);
+            if (!digres) {
                 BIO_printf(bio_err, "Out of memory\n");
                 goto end;
             }
-            BIO_printf(out, "%s Fingerprint=", OBJ_nid2sn(EVP_MD_type(fdig)));
+
+            BIO_printf(out, "%s Fingerprint=", fdigname);
             for (j = 0; j < (int)n; j++)
                 BIO_printf(out, "%02X%c", md[j], (j + 1 == (int)n) ? '\n' : ':');
         } else if (i == ocspid) {
@@ -1030,7 +1049,7 @@ int x509_main(int argc, char **argv)
     X509_REQ_free(req);
     X509_free(x);
     X509_free(xca);
-    EVP_PKEY_free(signkey);
+    EVP_PKEY_free(privkey);
     EVP_PKEY_free(CAkey);
     EVP_PKEY_free(pubkey);
     sk_OPENSSL_STRING_free(sigopts);

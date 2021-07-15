@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2016-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,10 +62,6 @@ int FuzzerTestOneInput(const uint8_t *buf, size_t len)
 
     if (len == 0)
         return 0;
-
-    /*
-     * TODO: use the ossltest engine (optionally?) to disable crypto checks.
-     */
 
     /* This only fuzzes the initial flow from the client so far. */
     ctx = SSL_CTX_new(SSLv23_method());

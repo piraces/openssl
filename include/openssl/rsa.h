@@ -184,7 +184,6 @@ int EVP_PKEY_CTX_get0_rsa_oaep_label(EVP_PKEY_CTX *ctx, unsigned char **label);
 # define EVP_PKEY_CTRL_RSA_KEYGEN_PRIMES  (EVP_PKEY_ALG_CTRL + 13)
 
 # define RSA_PKCS1_PADDING          1
-# define RSA_SSLV23_PADDING         2
 # define RSA_NO_PADDING             3
 # define RSA_PKCS1_OAEP_PADDING     4
 # define RSA_X931_PADDING           5
@@ -245,6 +244,9 @@ OSSL_DEPRECATEDIN_3_0 void RSA_set_flags(RSA *r, int flags);
 OSSL_DEPRECATEDIN_3_0 int RSA_get_version(RSA *r);
 OSSL_DEPRECATEDIN_3_0 ENGINE *RSA_get0_engine(const RSA *r);
 # endif  /* !OPENSSL_NO_DEPRECATED_3_0 */
+
+# define EVP_RSA_gen(bits) \
+    EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)(0 + (bits)))
 
 /* Deprecated version */
 # ifndef OPENSSL_NO_DEPRECATED_0_9_8
@@ -320,6 +322,7 @@ struct rsa_pss_params_st {
 };
 
 DECLARE_ASN1_FUNCTIONS(RSA_PSS_PARAMS)
+DECLARE_ASN1_DUP_FUNCTION(RSA_PSS_PARAMS)
 
 typedef struct rsa_oaep_params_st {
     X509_ALGOR *hashFunc;
@@ -405,13 +408,6 @@ int RSA_padding_check_PKCS1_OAEP_mgf1(unsigned char *to, int tlen,
                                       int num,
                                       const unsigned char *param, int plen,
                                       const EVP_MD *md, const EVP_MD *mgf1md);
-OSSL_DEPRECATEDIN_3_0
-int RSA_padding_add_SSLv23(unsigned char *to, int tlen,
-                           const unsigned char *f, int fl);
-OSSL_DEPRECATEDIN_3_0
-int RSA_padding_check_SSLv23(unsigned char *to, int tlen,
-                             const unsigned char *f, int fl,
-                             int rsa_len);
 OSSL_DEPRECATEDIN_3_0 int RSA_padding_add_none(unsigned char *to, int tlen,
                                                const unsigned char *f, int fl);
 OSSL_DEPRECATEDIN_3_0 int RSA_padding_check_none(unsigned char *to, int tlen,

@@ -1,5 +1,5 @@
 /*
- * Copyright 2001-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2001-2021 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
@@ -508,6 +508,10 @@ int ossl_ec_GF2m_simple_field_div(const EC_GROUP *, BIGNUM *r, const BIGNUM *a,
                                  const BIGNUM *b, BN_CTX *);
 
 #ifndef OPENSSL_NO_EC_NISTP_64_GCC_128
+# ifdef B_ENDIAN
+#  error "Can not enable ec_nistp_64_gcc_128 on big-endian systems"
+# endif
+
 /* method functions in ecp_nistp224.c */
 int ossl_ec_GFp_nistp224_group_init(EC_GROUP *group);
 int ossl_ec_GFp_nistp224_group_set_curve(EC_GROUP *group, const BIGNUM *p,

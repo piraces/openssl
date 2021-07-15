@@ -22,10 +22,8 @@ setup("test_ssl_new");
 
 use lib srctop_dir('Configurations');
 use lib bldtop_dir('.');
-use platform;
 
 my $no_fips = disabled('fips') || ($ENV{NO_FIPS} // 0);
-my $infile = bldtop_file('providers', platform->dso('fips'));
 
 $ENV{TEST_CERTS_DIR} = srctop_dir("test", "certs");
 
@@ -36,8 +34,7 @@ map { s/\^// } @conf_files if $^O eq "VMS";
 
 # We hard-code the number of tests to double-check that the globbing above
 # finds all files as expected.
-plan tests => 30 # = scalar @conf_srcs
-              + ($no_fips ? 0 : 1); # fipsinstall
+plan tests => 30;
 
 # Some test results depend on the configuration of enabled protocols. We only
 # verify generated sources in the default configuration.
@@ -101,7 +98,8 @@ my %skip = (
   # special-casing for.
   # TODO(TLS 1.3): We should review this once we have TLS 1.3.
   "13-fragmentation.cnf" => disabled("tls1_2"),
-  "14-curves.cnf" => disabled("tls1_2") || $no_ec || $no_ec2m,
+  "14-curves.cnf" => disabled("tls1_2") || disabled("tls1_3")
+                     || $no_ec || $no_ec2m,
   "15-certstatus.cnf" => $no_tls || $no_ocsp,
   "16-dtls-certstatus.cnf" => $no_dtls || $no_ocsp,
   "17-renegotiate.cnf" => $no_tls_below1_3,
@@ -117,13 +115,6 @@ my %skip = (
   "26-tls13_client_auth.cnf" => disabled("tls1_3") || ($no_ec && $no_dh),
   "29-dtls-sctp-label-bug.cnf" => disabled("sctp") || disabled("sock"),
 );
-
-unless ($no_fips) {
-    ok(run(app(['openssl', 'fipsinstall',
-                '-out', bldtop_file('providers', 'fipsmodule.cnf'),
-                '-module', $infile])),
-       "fipsinstall");
-}
 
 foreach my $conf (@conf_files) {
     subtest "Test configuration $conf" => sub {
