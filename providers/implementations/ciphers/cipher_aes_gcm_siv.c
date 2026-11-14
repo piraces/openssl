@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2019-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -21,6 +21,7 @@
 #include "prov/ciphercommon_aead.h"
 #include "prov/provider_ctx.h"
 #include "cipher_aes_gcm_siv.h"
+#include "providers/implementations/ciphers/cipher_aes_gcm_siv.inc"
 
 static int ossl_aes_gcm_siv_set_ctx_params(void *vctx, const OSSL_PARAM params[]);
 
@@ -71,7 +72,7 @@ static void *ossl_aes_gcm_siv_dupctx(void *vctx)
     ret->aad = NULL;
     ret->ecb_ctx = NULL;
 
-    if (in->aad == NULL) {
+    if (in->aad != NULL) {
         if ((ret->aad = OPENSSL_memdup(in->aad, UP16(ret->aad_len))) == NULL)
             goto err;
     }
@@ -80,7 +81,7 @@ static void *ossl_aes_gcm_siv_dupctx(void *vctx)
         goto err;
 
     return ret;
- err:
+err:
     if (ret != NULL) {
         OPENSSL_clear_free(ret->aad, ret->aad_len);
         OPENSSL_free(ret);
@@ -89,8 +90,8 @@ static void *ossl_aes_gcm_siv_dupctx(void *vctx)
 }
 
 static int ossl_aes_gcm_siv_init(void *vctx, const unsigned char *key, size_t keylen,
-                                 const unsigned char *iv, size_t ivlen,
-                                 const OSSL_PARAM params[], int enc)
+    const unsigned char *iv, size_t ivlen,
+    const OSSL_PARAM params[], int enc)
 {
     PROV_AES_GCM_SIV_CTX *ctx = (PROV_AES_GCM_SIV_CTX *)vctx;
 
@@ -98,6 +99,16 @@ static int ossl_aes_gcm_siv_init(void *vctx, const unsigned char *key, size_t ke
         return 0;
 
     ctx->enc = enc;
+
+    /*
+     * Clear AAD when starting a new message or restarting after payload
+     * processing. Preserve pending AAD during parameter adjustments.
+     */
+    if (key != NULL || iv != NULL || ctx->used_enc || ctx->used_dec) {
+        OPENSSL_clear_free(ctx->aad, ctx->aad_len);
+        ctx->aad = NULL;
+        ctx->aad_len = 0;
+    }
 
     if (key != NULL) {
         if (keylen != ctx->key_len) {
@@ -114,29 +125,30 @@ static int ossl_aes_gcm_siv_init(void *vctx, const unsigned char *key, size_t ke
         memcpy(ctx->nonce, iv, sizeof(ctx->nonce));
     }
 
-    if (!ctx->hw->initkey(ctx))
+    /* only initialize state if we have a key */
+    if ((key != NULL || ctx->ecb_ctx != NULL) && ctx->hw->initkey(ctx) == 0)
         return 0;
 
     return ossl_aes_gcm_siv_set_ctx_params(ctx, params);
 }
 
 static int ossl_aes_gcm_siv_einit(void *vctx, const unsigned char *key, size_t keylen,
-                                  const unsigned char *iv, size_t ivlen,
-                                  const OSSL_PARAM params[])
+    const unsigned char *iv, size_t ivlen,
+    const OSSL_PARAM params[])
 {
     return ossl_aes_gcm_siv_init(vctx, key, keylen, iv, ivlen, params, 1);
 }
 
 static int ossl_aes_gcm_siv_dinit(void *vctx, const unsigned char *key, size_t keylen,
-                                  const unsigned char *iv, size_t ivlen,
-                                  const OSSL_PARAM params[])
+    const unsigned char *iv, size_t ivlen,
+    const OSSL_PARAM params[])
 {
     return ossl_aes_gcm_siv_init(vctx, key, keylen, iv, ivlen, params, 0);
 }
 
 #define ossl_aes_gcm_siv_stream_update ossl_aes_gcm_siv_cipher
 static int ossl_aes_gcm_siv_cipher(void *vctx, unsigned char *out, size_t *outl,
-                                   size_t outsize, const unsigned char *in, size_t inl)
+    size_t outsize, const unsigned char *in, size_t inl)
 {
     PROV_AES_GCM_SIV_CTX *ctx = (PROV_AES_GCM_SIV_CTX *)vctx;
     int error = 0;
@@ -144,11 +156,9 @@ static int ossl_aes_gcm_siv_cipher(void *vctx, unsigned char *out, size_t *outl,
     if (!ossl_prov_is_running())
         return 0;
 
-    /* The RFC has a test case for this, but we don't try to do anything */
-    if (inl == 0) {
-        if (outl != NULL)
-            *outl = 0;
-        return 1;
+    if (in == NULL && inl != 0) {
+        ERR_raise(ERR_LIB_PROV, ERR_R_PASSED_NULL_PARAMETER);
+        return 0;
     }
 
     if (outsize < inl) {
@@ -164,7 +174,7 @@ static int ossl_aes_gcm_siv_cipher(void *vctx, unsigned char *out, size_t *outl,
 }
 
 static int ossl_aes_gcm_siv_stream_final(void *vctx, unsigned char *out, size_t *outl,
-                                         size_t outsize)
+    size_t outsize)
 {
     PROV_AES_GCM_SIV_CTX *ctx = (PROV_AES_GCM_SIV_CTX *)vctx;
     int error = 0;
@@ -182,77 +192,78 @@ static int ossl_aes_gcm_siv_stream_final(void *vctx, unsigned char *out, size_t 
 static int ossl_aes_gcm_siv_get_ctx_params(void *vctx, OSSL_PARAM params[])
 {
     PROV_AES_GCM_SIV_CTX *ctx = (PROV_AES_GCM_SIV_CTX *)vctx;
-    OSSL_PARAM *p;
+    struct ossl_aes_gcm_siv_get_ctx_params_st p;
 
-    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_AEAD_TAG);
-    if (p != NULL && p->data_type == OSSL_PARAM_OCTET_STRING) {
-        if (!ctx->enc || !ctx->generated_tag
-                || p->data_size != sizeof(ctx->tag)
-                || !OSSL_PARAM_set_octet_string(p, ctx->tag, sizeof(ctx->tag))) {
+    if (ctx == NULL || !ossl_aes_gcm_siv_get_ctx_params_decoder(params, &p))
+        return 0;
+
+    if (p.tag != NULL && p.tag->data_type == OSSL_PARAM_OCTET_STRING) {
+        if (!ctx->enc || !ctx->generated_tag) {
+            ERR_raise(ERR_LIB_PROV, PROV_R_TAG_NOT_SET);
+            return 0;
+        }
+        if (p.tag->data_size != sizeof(ctx->tag)
+            || !OSSL_PARAM_set_octet_string(p.tag, ctx->tag,
+                sizeof(ctx->tag))) {
             ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_SET_PARAMETER);
             return 0;
         }
     }
-    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_AEAD_TAGLEN);
-    if (p != NULL && !OSSL_PARAM_set_size_t(p, sizeof(ctx->tag))) {
+
+    if (p.taglen != NULL && !OSSL_PARAM_set_size_t(p.taglen, sizeof(ctx->tag))) {
         ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_SET_PARAMETER);
         return 0;
     }
-    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_KEYLEN);
-    if (p != NULL && !OSSL_PARAM_set_size_t(p, ctx->key_len)) {
+
+    if (p.keylen != NULL && !OSSL_PARAM_set_size_t(p.keylen, ctx->key_len)) {
         ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_SET_PARAMETER);
         return 0;
     }
     return 1;
 }
 
-static const OSSL_PARAM aes_gcm_siv_known_gettable_ctx_params[] = {
-    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_KEYLEN, NULL),
-    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_AEAD_TAGLEN, NULL),
-    OSSL_PARAM_octet_string(OSSL_CIPHER_PARAM_AEAD_TAG, NULL, 0),
-    OSSL_PARAM_END
-};
-
 static const OSSL_PARAM *ossl_aes_gcm_siv_gettable_ctx_params(ossl_unused void *cctx,
-                                                              ossl_unused void *provctx)
+    ossl_unused void *provctx)
 {
-    return aes_gcm_siv_known_gettable_ctx_params;
+    return ossl_aes_gcm_siv_get_ctx_params_list;
 }
 
 static int ossl_aes_gcm_siv_set_ctx_params(void *vctx, const OSSL_PARAM params[])
 {
     PROV_AES_GCM_SIV_CTX *ctx = (PROV_AES_GCM_SIV_CTX *)vctx;
-    const OSSL_PARAM *p;
+    struct aes_gcm_siv_set_ctx_params_st p;
     unsigned int speed = 0;
 
-    if (params == NULL)
-        return 1;
+    if (ctx == NULL || !aes_gcm_siv_set_ctx_params_decoder(params, &p))
+        return 0;
 
-    p = OSSL_PARAM_locate_const(params, OSSL_CIPHER_PARAM_AEAD_TAG);
-    if (p != NULL) {
-        if (p->data_type != OSSL_PARAM_OCTET_STRING
-                || p->data_size != sizeof(ctx->user_tag)) {
+    if (p.tag != NULL) {
+        if (p.tag->data_type != OSSL_PARAM_OCTET_STRING
+            || p.tag->data_size != sizeof(ctx->user_tag)) {
             ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_GET_PARAMETER);
             return 0;
         }
         if (!ctx->enc) {
-            memcpy(ctx->user_tag, p->data, sizeof(ctx->tag));
+            memcpy(ctx->user_tag, p.tag->data, sizeof(ctx->tag));
             ctx->have_user_tag = 1;
+        } else if (p.tag->data != NULL) {
+            ERR_raise(ERR_LIB_PROV, PROV_R_TAG_NOT_NEEDED);
+            return 0;
         }
     }
-    p = OSSL_PARAM_locate_const(params, OSSL_CIPHER_PARAM_SPEED);
-    if (p != NULL) {
-        if (!OSSL_PARAM_get_uint(p, &speed)) {
+
+    if (p.speed != NULL) {
+        if (!OSSL_PARAM_get_uint(p.speed, &speed)) {
             ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_GET_PARAMETER);
             return 0;
         }
         ctx->speed = !!speed;
     }
-    p = OSSL_PARAM_locate_const(params, OSSL_CIPHER_PARAM_KEYLEN);
-    if (p != NULL) {
+
+    if (p.keylen != NULL) {
         size_t key_len;
 
-        if (!OSSL_PARAM_get_size_t(p, &key_len)) {
+        if (!OSSL_PARAM_get_size_t(p.keylen, &key_len)) {
             ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_GET_PARAMETER);
             return 0;
         }
@@ -262,61 +273,69 @@ static int ossl_aes_gcm_siv_set_ctx_params(void *vctx, const OSSL_PARAM params[]
             return 0;
         }
     }
+
+    if (p.ivlen != NULL) {
+        size_t iv_len;
+
+        if (!OSSL_PARAM_get_size_t(p.ivlen, &iv_len)) {
+            ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_GET_PARAMETER);
+            return 0;
+        }
+        /* The nonce length can not be modified */
+        if (iv_len != sizeof(ctx->nonce)) {
+            ERR_raise(ERR_LIB_PROV, PROV_R_INVALID_IV_LENGTH);
+            return 0;
+        }
+    }
     return 1;
 }
 
-static const OSSL_PARAM aes_gcm_siv_known_settable_ctx_params[] = {
-    OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_KEYLEN, NULL),
-    OSSL_PARAM_uint(OSSL_CIPHER_PARAM_SPEED, NULL),
-    OSSL_PARAM_octet_string(OSSL_CIPHER_PARAM_AEAD_TAG, NULL, 0),
-    OSSL_PARAM_END
-};
 static const OSSL_PARAM *ossl_aes_gcm_siv_settable_ctx_params(ossl_unused void *cctx,
-                                                              ossl_unused void *provctx)
+    ossl_unused void *provctx)
 {
-    return aes_gcm_siv_known_settable_ctx_params;
+    return aes_gcm_siv_set_ctx_params_list;
 }
 
-#define IMPLEMENT_cipher(alg, lc, UCMODE, flags, kbits, blkbits, ivbits)                                \
-static OSSL_FUNC_cipher_newctx_fn              ossl_##alg##kbits##_##lc##_newctx;                       \
-static OSSL_FUNC_cipher_freectx_fn             ossl_##alg##_##lc##_freectx;                             \
-static OSSL_FUNC_cipher_dupctx_fn              ossl_##alg##_##lc##_dupctx;                              \
-static OSSL_FUNC_cipher_encrypt_init_fn        ossl_##alg##_##lc##_einit;                               \
-static OSSL_FUNC_cipher_decrypt_init_fn        ossl_##alg##_##lc##_dinit;                               \
-static OSSL_FUNC_cipher_update_fn              ossl_##alg##_##lc##_stream_update;                       \
-static OSSL_FUNC_cipher_final_fn               ossl_##alg##_##lc##_stream_final;                        \
-static OSSL_FUNC_cipher_cipher_fn              ossl_##alg##_##lc##_cipher;                              \
-static OSSL_FUNC_cipher_get_params_fn          ossl_##alg##_##kbits##_##lc##_get_params;                \
-static OSSL_FUNC_cipher_get_ctx_params_fn      ossl_##alg##_##lc##_get_ctx_params;                      \
-static OSSL_FUNC_cipher_gettable_ctx_params_fn ossl_##alg##_##lc##_gettable_ctx_params;                 \
-static OSSL_FUNC_cipher_set_ctx_params_fn      ossl_##alg##_##lc##_set_ctx_params;                      \
-static OSSL_FUNC_cipher_settable_ctx_params_fn ossl_##alg##_##lc##_settable_ctx_params;                 \
-static int ossl_##alg##_##kbits##_##lc##_get_params(OSSL_PARAM params[])                                \
-{                                                                                                       \
-    return ossl_cipher_generic_get_params(params, EVP_CIPH_##UCMODE##_MODE,                             \
-                                          flags, kbits, blkbits, ivbits);                               \
-}                                                                                                       \
-static void * ossl_##alg##kbits##_##lc##_newctx(void *provctx)                                          \
-{                                                                                                       \
-    return ossl_##alg##_##lc##_newctx(provctx, kbits);                                                  \
-}                                                                                                       \
-const OSSL_DISPATCH ossl_##alg##kbits##lc##_functions[] = {                                             \
-    { OSSL_FUNC_CIPHER_NEWCTX,              (void (*)(void))ossl_##alg##kbits##_##lc##_newctx },        \
-    { OSSL_FUNC_CIPHER_FREECTX,             (void (*)(void))ossl_##alg##_##lc##_freectx },              \
-    { OSSL_FUNC_CIPHER_DUPCTX,              (void (*)(void))ossl_##alg##_##lc##_dupctx },               \
-    { OSSL_FUNC_CIPHER_ENCRYPT_INIT,        (void (*)(void))ossl_##alg##_##lc##_einit },                \
-    { OSSL_FUNC_CIPHER_DECRYPT_INIT,        (void (*)(void))ossl_##alg##_##lc##_dinit },                \
-    { OSSL_FUNC_CIPHER_UPDATE,              (void (*)(void))ossl_##alg##_##lc##_stream_update },        \
-    { OSSL_FUNC_CIPHER_FINAL,               (void (*)(void))ossl_##alg##_##lc##_stream_final },         \
-    { OSSL_FUNC_CIPHER_CIPHER,              (void (*)(void))ossl_##alg##_##lc##_cipher },               \
-    { OSSL_FUNC_CIPHER_GET_PARAMS,          (void (*)(void))ossl_##alg##_##kbits##_##lc##_get_params }, \
-    { OSSL_FUNC_CIPHER_GETTABLE_PARAMS,     (void (*)(void))ossl_cipher_generic_gettable_params },      \
-    { OSSL_FUNC_CIPHER_GET_CTX_PARAMS,      (void (*)(void))ossl_##alg##_##lc##_get_ctx_params },       \
-    { OSSL_FUNC_CIPHER_GETTABLE_CTX_PARAMS, (void (*)(void))ossl_##alg##_##lc##_gettable_ctx_params },  \
-    { OSSL_FUNC_CIPHER_SET_CTX_PARAMS,      (void (*)(void))ossl_##alg##_##lc##_set_ctx_params },       \
-    { OSSL_FUNC_CIPHER_SETTABLE_CTX_PARAMS, (void (*)(void))ossl_##alg##_##lc##_settable_ctx_params },  \
-    { 0, NULL }                                                                                         \
-}
+#define IMPLEMENT_cipher(alg, lc, UCMODE, flags, kbits, blkbits, ivbits)                                   \
+    static OSSL_FUNC_cipher_newctx_fn ossl_##alg##kbits##_##lc##_newctx;                                   \
+    static OSSL_FUNC_cipher_freectx_fn ossl_##alg##_##lc##_freectx;                                        \
+    static OSSL_FUNC_cipher_dupctx_fn ossl_##alg##_##lc##_dupctx;                                          \
+    static OSSL_FUNC_cipher_encrypt_init_fn ossl_##alg##_##lc##_einit;                                     \
+    static OSSL_FUNC_cipher_decrypt_init_fn ossl_##alg##_##lc##_dinit;                                     \
+    static OSSL_FUNC_cipher_update_fn ossl_##alg##_##lc##_stream_update;                                   \
+    static OSSL_FUNC_cipher_final_fn ossl_##alg##_##lc##_stream_final;                                     \
+    static OSSL_FUNC_cipher_cipher_fn ossl_##alg##_##lc##_cipher;                                          \
+    static OSSL_FUNC_cipher_get_params_fn ossl_##alg##_##kbits##_##lc##_get_params;                        \
+    static OSSL_FUNC_cipher_get_ctx_params_fn ossl_##alg##_##lc##_get_ctx_params;                          \
+    static OSSL_FUNC_cipher_gettable_ctx_params_fn ossl_##alg##_##lc##_gettable_ctx_params;                \
+    static OSSL_FUNC_cipher_set_ctx_params_fn ossl_##alg##_##lc##_set_ctx_params;                          \
+    static OSSL_FUNC_cipher_settable_ctx_params_fn ossl_##alg##_##lc##_settable_ctx_params;                \
+    static int ossl_##alg##_##kbits##_##lc##_get_params(OSSL_PARAM params[])                               \
+    {                                                                                                      \
+        return ossl_cipher_generic_get_params(params, EVP_CIPH_##UCMODE##_MODE,                            \
+            flags, kbits, blkbits, ivbits);                                                                \
+    }                                                                                                      \
+    static void *ossl_##alg##kbits##_##lc##_newctx(void *provctx)                                          \
+    {                                                                                                      \
+        return ossl_##alg##_##lc##_newctx(provctx, kbits);                                                 \
+    }                                                                                                      \
+    const OSSL_DISPATCH ossl_##alg##kbits##lc##_functions[] = {                                            \
+        { OSSL_FUNC_CIPHER_NEWCTX, (void (*)(void))ossl_##alg##kbits##_##lc##_newctx },                    \
+        { OSSL_FUNC_CIPHER_FREECTX, (void (*)(void))ossl_##alg##_##lc##_freectx },                         \
+        { OSSL_FUNC_CIPHER_DUPCTX, (void (*)(void))ossl_##alg##_##lc##_dupctx },                           \
+        { OSSL_FUNC_CIPHER_ENCRYPT_INIT, (void (*)(void))ossl_##alg##_##lc##_einit },                      \
+        { OSSL_FUNC_CIPHER_DECRYPT_INIT, (void (*)(void))ossl_##alg##_##lc##_dinit },                      \
+        { OSSL_FUNC_CIPHER_UPDATE, (void (*)(void))ossl_##alg##_##lc##_stream_update },                    \
+        { OSSL_FUNC_CIPHER_FINAL, (void (*)(void))ossl_##alg##_##lc##_stream_final },                      \
+        { OSSL_FUNC_CIPHER_CIPHER, (void (*)(void))ossl_##alg##_##lc##_cipher },                           \
+        { OSSL_FUNC_CIPHER_GET_PARAMS, (void (*)(void))ossl_##alg##_##kbits##_##lc##_get_params },         \
+        { OSSL_FUNC_CIPHER_GETTABLE_PARAMS, (void (*)(void))ossl_cipher_generic_gettable_params },         \
+        { OSSL_FUNC_CIPHER_GET_CTX_PARAMS, (void (*)(void))ossl_##alg##_##lc##_get_ctx_params },           \
+        { OSSL_FUNC_CIPHER_GETTABLE_CTX_PARAMS, (void (*)(void))ossl_##alg##_##lc##_gettable_ctx_params }, \
+        { OSSL_FUNC_CIPHER_SET_CTX_PARAMS, (void (*)(void))ossl_##alg##_##lc##_set_ctx_params },           \
+        { OSSL_FUNC_CIPHER_SETTABLE_CTX_PARAMS, (void (*)(void))ossl_##alg##_##lc##_settable_ctx_params }, \
+        OSSL_DISPATCH_END                                                                                  \
+    }
 
 IMPLEMENT_cipher(aes, gcm_siv, GCM_SIV, AEAD_FLAGS, 128, 8, 96);
 IMPLEMENT_cipher(aes, gcm_siv, GCM_SIV, AEAD_FLAGS, 192, 8, 96);

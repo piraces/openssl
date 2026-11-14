@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# Copyright 2020-2021 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2020-2026 The OpenSSL Project Authors. All Rights Reserved.
 #
 # Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
@@ -26,15 +26,19 @@ use platform;
 my $no_check = disabled("fips") || disabled('fips-securitychecks');
 plan skip_all => "Test only supported in a fips build with security checks"
     if $no_check;
-plan tests => 11;
+plan tests => 13;
 
 my $fipsmodule = bldtop_file('providers', platform->dso('fips'));
 my $fipsconf = srctop_file("test", "fips-and-base.cnf");
 my $defaultconf = srctop_file("test", "default.cnf");
+my $identityconf = srctop_file("test" ,"fipsidentity.cnf");
 my $tbs_data = $fipsmodule;
 my $bogus_data = $fipsconf;
 
 $ENV{OPENSSL_CONF} = $fipsconf;
+
+run(test(["fips_version_test", "-config", $fipsconf, "<3.4.0"]),
+          capture => 1, statusvar => \my $dsasignpass);
 
 ok(run(app(['openssl', 'list', '-public-key-methods', '-verbose'])),
    "provider listing of public key methods");
@@ -48,6 +52,8 @@ ok(run(app(['openssl', 'list', '-kem-algorithms', '-verbose'])),
    "provider listing of key encapsulation algorithms");
 ok(run(app(['openssl', 'list', '-signature-algorithms', '-verbose'])),
    "provider listing of signature algorithms");
+ok(run(app(['openssl', 'list', '-tls-signature-algorithms', '-verbose'])),
+   "provider listing of TLS signature algorithms");
 ok(run(app(['openssl', 'list', '-asymcipher-algorithms', '-verbose'])),
    "provider listing of encryption algorithms");
 ok(run(app(['openssl', 'list', '-key-managers', '-verbose', '-select', 'DSA' ])),
@@ -109,65 +115,70 @@ sub tsignverify {
 
     $ENV{OPENSSL_CONF} = $defaultconf;
 
-    $sigfile = $nonfips_sigfile;
-    $testtext = $prefix.': '.
-        'Sign something with a non-FIPS key'.
-        ' with the default provider';
-    ok(run(app(['openssl', 'dgst', '-sha256',
-                '-sign', $nonfips_key,
-                '-out', $sigfile,
-                $tbs_data])),
-       $testtext);
+    SKIP : {
+        skip "FIPS failure testing", 6
+            if ($nonfips_key eq '');
 
-    $testtext = $prefix.': '.
-        'Verify something with a non-FIPS key'.
-        ' with the default provider';
-    ok(run(app(['openssl', 'dgst', '-sha256',
-                '-verify', $nonfips_pub_key,
-                '-signature', $sigfile,
-                $tbs_data])),
-       $testtext);
+        $sigfile = $nonfips_sigfile;
+        $testtext = $prefix.': '.
+            'Sign something with a non-FIPS key'.
+            ' with the default provider';
+        ok(run(app(['openssl', 'dgst', '-sha256',
+                    '-sign', $nonfips_key,
+                    '-out', $sigfile,
+                    $tbs_data])),
+           $testtext);
 
-    $ENV{OPENSSL_CONF} = $fipsconf;
+        $testtext = $prefix.': '.
+            'Verify something with a non-FIPS key'.
+            ' with the default provider';
+        ok(run(app(['openssl', 'dgst', '-sha256',
+                    '-verify', $nonfips_pub_key,
+                    '-signature', $sigfile,
+                    $tbs_data])),
+           $testtext);
 
-    $testtext = $prefix.': '.
-        'Sign something with a non-FIPS key'.
-        ' (should fail)';
-    ok(!run(app(['openssl', 'dgst', '-sha256',
-                 '-sign', $nonfips_key,
-                 '-out', $prefix.'.nonfips.fail.sig',
-                 $tbs_data])),
-       $testtext);
+        $ENV{OPENSSL_CONF} = $fipsconf;
 
-    $testtext = $prefix.': '.
-        'Verify something with a non-FIPS key'.
-        ' (should fail)';
-    ok(!run(app(['openssl', 'dgst', '-sha256',
-                 '-verify', $nonfips_pub_key,
-                 '-signature', $sigfile,
-                 $tbs_data])),
-       $testtext);
+        $testtext = $prefix.': '.
+            'Sign something with a non-FIPS key'.
+            ' (should fail)';
+        ok(!run(app(['openssl', 'dgst', '-sha256',
+                     '-sign', $nonfips_key,
+                     '-out', $prefix.'.nonfips.fail.sig',
+                     $tbs_data])),
+           $testtext);
 
-    $testtext = $prefix.': '.
-        'Verify something with a non-FIPS key'.
-		' in FIPS mode but with a non-FIPS property query';
-    ok(run(app(['openssl', 'dgst',
-				'-provider', 'default',
-				'-propquery', '?fips!=yes',
-				'-sha256',
-                '-verify', $nonfips_pub_key,
-                '-signature', $sigfile,
-                $tbs_data])),
-       $testtext);
+        $testtext = $prefix.': '.
+            'Verify something with a non-FIPS key'.
+            ' (should fail)';
+        ok(!run(app(['openssl', 'dgst', '-sha256',
+                     '-verify', $nonfips_pub_key,
+                     '-signature', $sigfile,
+                     $tbs_data])),
+           $testtext);
 
-    $testtext = $prefix.': '.
-        'Verify a valid signature against the wrong data with a non-FIPS key'.
-        ' (should fail)';
-    ok(!run(app(['openssl', 'dgst', '-sha256',
-                 '-verify', $nonfips_pub_key,
-                 '-signature', $sigfile,
-                 $bogus_data])),
-       $testtext);
+        $testtext = $prefix.': '.
+            'Verify something with a non-FIPS key'.
+		    ' in FIPS mode but with a non-FIPS property query';
+        ok(run(app(['openssl', 'dgst',
+				    '-provider', 'default',
+				    '-propquery', '?fips!=yes',
+				    '-sha256',
+                    '-verify', $nonfips_pub_key,
+                    '-signature', $sigfile,
+                    $tbs_data])),
+           $testtext);
+
+        $testtext = $prefix.': '.
+            'Verify a valid signature against the wrong data with a non-FIPS key'.
+            ' (should fail)';
+        ok(!run(app(['openssl', 'dgst', '-sha256',
+                     '-verify', $nonfips_pub_key,
+                     '-signature', $sigfile,
+                     $bogus_data])),
+           $testtext);
+   }
 }
 
 SKIP : {
@@ -272,9 +283,46 @@ SKIP: {
     };
 }
 
+SKIP: {
+    skip "FIPS RSA tests because of no rsa in this build", 1
+        if disabled("rsa");
+
+    subtest RSA_identity => sub {
+        my $testtext_prefix = 'RSA';
+        my $fips_key = $testtext_prefix.'.fips.priv.pem';
+        my $fips_pub_key = $testtext_prefix.'.fips.pub.pem';
+        my $nonfips_key = $testtext_prefix.'.nonfips.priv.pem';
+        my $nonfips_pub_key = $testtext_prefix.'.nonfips.pub.pem';
+        my $testtext = '';
+
+        plan tests => 2;
+
+        my $destfips = bldtop_file("test-runs", "test_cli_fips", platform->dso("fips-identity"));
+        copy($fipsmodule, $destfips) or die("Couldn't copy file");
+        $ENV{OPENSSL_CONF} = $identityconf;
+        my $oldmodules = $ENV{OPENSSL_MODULES};
+        $ENV{OPENSSL_MODULES} = bldtop_dir("test-runs", "test_cli_fips");
+        $testtext = $testtext_prefix.': '.
+            'Generate a key with a non-FIPS algorithm with the default provider';
+        print "Running genpkey";
+        ok(run(app(['openssl', 'genpkey', '-algorithm', 'RSA',
+                    '-pkeyopt', 'rsa_keygen_bits:512',
+                    '-out', $nonfips_key])),
+           $testtext);
+
+        $testtext = $testtext_prefix.': '.
+            'Generate a key with a FIPS algorithm';
+        ok(run(app(['openssl', 'genpkey', '-algorithm', 'RSA',
+                    '-pkeyopt', 'rsa_keygen_bits:2048',
+                    '-out', $fips_key])),
+           $testtext);
+        $ENV{OPENSSL_MODULES} = $oldmodules;
+    };
+}
+
 SKIP : {
     skip "FIPS DSA tests because of no dsa in this build", 1
-        if disabled("dsa");
+        if disabled("dsa") || $dsasignpass == '0';
 
     subtest DSA => sub {
         my $testtext_prefix = 'DSA';
@@ -395,7 +443,6 @@ SKIP : {
                     '-out', $testtext_prefix.'.fail.priv.pem'])),
             $testtext);
 
-        tsignverify($testtext_prefix, $fips_key, $fips_pub_key, $nonfips_key,
-                    $nonfips_pub_key);
+        tsignverify($testtext_prefix, $fips_key, $fips_pub_key, '', '');
     };
 }

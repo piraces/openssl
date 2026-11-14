@@ -31,6 +31,7 @@ B<openssl> B<enc>|I<cipher>
 [B<-md> I<digest>]
 [B<-iter> I<count>]
 [B<-pbkdf2>]
+[B<-saltlen> I<size>]
 [B<-p>]
 [B<-P>]
 [B<-bufsize> I<number>]
@@ -38,7 +39,11 @@ B<openssl> B<enc>|I<cipher>
 [B<-v>]
 [B<-debug>]
 [B<-none>]
-{- $OpenSSL::safe::opt_engine_synopsis -}{- $OpenSSL::safe::opt_r_synopsis -}
+[B<-skeymgmt> I<skeymgmt>]
+[B<-skeyopt> I<opt>:I<value>]
+[B<-skeyuri> I<uri>]
+[B<-storepass> I<arg>]
+{- $OpenSSL::safe::opt_r_synopsis -}
 {- $OpenSSL::safe::opt_provider_synopsis -}
 
 B<openssl> I<cipher> [B<...>]
@@ -56,7 +61,9 @@ either by itself or in addition to the encryption or decryption.
 
 =item B<-I<cipher>>
 
-The cipher to use.
+The cipher to use. This option is specified by prepending a hyphen to the
+cipher name (e.g., B<-aes-256-cbc>), not as an argument to a C<-cipher> flag.
+Use C<openssl list -cipher-algorithms> to see the available ciphers.
 
 =item B<-help>
 
@@ -97,13 +104,19 @@ Base64 process the data. This means that if encryption is taking place
 the data is base64 encoded after encryption. If decryption is set then
 the input data is base64 decoded before being decrypted.
 
+When the B<-A> option not given,
+on encoding a newline is inserted after each 64 characters, and
+on decoding a newline is expected among the first 1024 bytes of input.
+
 =item B<-base64>
 
 Same as B<-a>
 
 =item B<-A>
 
-If the B<-a> option is set then base64 process the data on one line.
+If the B<-a> option is set then base64 encoding produces output without any
+newline character, and base64 decoding does not require any newlines.
+Therefore it can be helpful to use the B<-A> option when decoding unknown input.
 
 =item B<-k> I<password>
 
@@ -132,6 +145,15 @@ This option enables the use of PBKDF2 algorithm to derive the key.
 Use PBKDF2 algorithm with a default iteration count of 10000
 unless otherwise specified by the B<-iter> command line option.
 
+=item B<-saltlen>
+
+Set the salt length to use when using the B<-pbkdf2> option.
+For compatibility reasons, the default is 8 bytes.
+The maximum value is currently 16 bytes.
+If the B<-pbkdf2> option is not used, then this option is ignored
+and a fixed salt length of 8 is used. The salt length used when
+encrypting must also be used when decrypting.
+
 =item B<-nosalt>
 
 Don't use a salt in the key derivation routines. This option B<SHOULD NOT> be
@@ -147,7 +169,8 @@ encrypting, this is the default.
 
 The actual salt to use: this must be represented as a string of hex digits.
 If this option is used while encrypting, the same exact value will be needed
-again during decryption.
+again during decryption. This salt may be truncated or zero padded to
+match the salt length (See B<-saltlen>).
 
 =item B<-K> I<key>
 
@@ -174,9 +197,12 @@ Print out the key and IV used.
 Print out the key and IV used then immediately exit: don't do any encryption
 or decryption.
 
-=item B<-bufsize> I<number>
+=item B<-bufsize> I<number>[B<k>]
 
 Set the buffer size for I/O.
+The maximum size that can be specified is B<2^31-1> (2147483647) bytes.
+The B<k> suffix can be specified to indicate that I<number> is provided
+in kibibytes (multiples of 1024 bytes).
 
 =item B<-nopad>
 
@@ -200,30 +226,46 @@ or zlib-dynamic option.
 
 Use NULL cipher (no encryption or decryption of input).
 
+=item B<-skeymgmt> I<skeymgmt>
+
+Some providers may support opaque symmetric keys objects. To use them, we need
+to know the name of the B<EVP_SKEYMGMT> to be used. If not specified, the name
+of the cipher will be used.
+
+To find out the name of the suitable symmetric key management,
+please refer to the output of the C<openssl list -skey-managers> command.
+
+=item B<-skeyopt> I<opt>:I<value>
+
+To obtain an existing opaque symmetric key or generate a new one, key
+options are specified as opt:value. These options can't be used together with
+any options implying raw key directly or indirectly.
+
+=item B<-skeyuri> I<uri>
+
+The URI identifying the symmetric key object to be used for encryption.  This
+option can't be used together with any options implying raw key directly or
+indirectly. The B<-skeymgmt> option is ignored. If both B<-skeyuri> and
+B<-skeyopt> options are provided, B<-skeyuri> is ignored.
+
+=item B<-storepass> I<arg>
+
+The input URI password source. For more information about the format of I<arg>
+see L<openssl-passphrase-options(1)>.
+
 {- $OpenSSL::safe::opt_r_item -}
 
 {- $OpenSSL::safe::opt_provider_item -}
-
-{- $OpenSSL::safe::opt_engine_item -}
 
 =back
 
 =head1 NOTES
 
 The program can be called either as C<openssl I<cipher>> or
-C<openssl enc -I<cipher>>. The first form doesn't work with
-engine-provided ciphers, because this form is processed before the
-configuration file is read and any ENGINEs loaded.
+C<openssl enc -I<cipher>>.
 Use the L<openssl-list(1)> command to get a list of supported ciphers.
 
-Engines which provide entirely new encryption algorithms (such as the ccgost
-engine which provides gost89 algorithm) should be configured in the
-configuration file. Engines specified on the command line using B<-engine>
-option can only be used for hardware-assisted implementations of
-ciphers which are supported by the OpenSSL core or another engine specified
-in the configuration file.
-
-When the enc command lists supported ciphers, ciphers provided by engines,
+When the enc command lists supported ciphers, ciphers provided by providers,
 specified in the configuration files are listed too.
 
 A password will be prompted for to derive the key and IV if necessary.
@@ -245,7 +287,7 @@ Some of the ciphers do not have large keys and others have security
 implications if not used correctly. A beginner is advised to just use
 a strong block cipher, such as AES, in CBC mode.
 
-All the block ciphers normally use PKCS#5 padding, also known as standard
+All the block ciphers normally use PKCS#7 padding, also known as standard
 block padding. This allows a rudimentary integrity or password check to
 be performed. However, since the chance of random data passing the test
 is better than 1 in 256 it isn't a very good test.
@@ -273,11 +315,11 @@ to the output.
 =head1 SUPPORTED CIPHERS
 
 Note that some of these ciphers can be disabled at compile time
-and some are available only if an appropriate engine is configured
+and some are available only if an appropriate provider is configured
 in the configuration file. The output when invoking this command
 with the B<-list> option (that is C<openssl enc -list>) is
 a list of ciphers, supported by your version of OpenSSL, including
-ones provided by configured engines.
+ones provided by configured providers.
 
 This command does not support authenticated encryption modes
 like CCM and GCM, and will not support such modes in the future.
@@ -342,9 +384,6 @@ In both cases, no IV is needed. See example below.
  des-ede3-ofb       Three key triple DES EDE in OFB mode
 
  desx               DESX algorithm.
-
- gost89             GOST 28147-89 in CFB mode (provided by ccgost engine)
- gost89-cnt         GOST 28147-89 in CNT mode (provided by ccgost engine)
 
  idea-cbc           IDEA algorithm in CBC mode
  idea               same as idea-cbc
@@ -452,10 +491,17 @@ or
 =head1 BUGS
 
 The B<-A> option when used with large files doesn't work properly.
+On the other hand, when base64 decoding without the B<-A> option,
+if the first 1024 bytes of input do not include a newline character
+the first two lines of input are ignored.
 
 The B<openssl enc> command only supports a fixed number of algorithms with
 certain parameters. So if, for example, you want to use RC2 with a
 76 bit key or RC4 with an 84 bit key you can't use this program.
+
+=head1 SEE ALSO
+
+L<openssl-list(1)>, L<EVP_SKEY(3)>, L<openssl-passphrase-options(1)>
 
 =head1 HISTORY
 
@@ -463,11 +509,19 @@ The default digest was changed from MD5 to SHA256 in OpenSSL 1.1.0.
 
 The B<-list> option was added in OpenSSL 1.1.1e.
 
-The B<-ciphers> and B<-engine> options were deprecated in OpenSSL 3.0.
+The B<-ciphers> option was deprecated in OpenSSL 3.0.
+
+The B<-saltlen> option was added in OpenSSL 3.2.
+
+The B<-skeymgmt> and B<-skeyopt> options were added in OpenSSL 3.5.
+
+The B<-engine> option was removed in OpenSSL 4.0.
+
+The B<-skeyuri> and B<-storepass> options were added in OpenSSL 4.0.
 
 =head1 COPYRIGHT
 
-Copyright 2000-2022 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2000-2026 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2022-2025 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -34,18 +34,18 @@ static int test_basic(void)
     if (!TEST_ptr(cctx))
         goto err;
 
-    if (!TEST_true(qtest_create_quic_objects(NULL, cctx, cert, privkey, 0,
-                                             &qtserv, &cssl, NULL)))
+    if (!TEST_true(qtest_create_quic_objects(NULL, cctx, NULL, cert, privkey, 0,
+            &qtserv, &cssl, NULL, NULL)))
         goto err;
 
     if (!TEST_true(qtest_create_quic_connection(qtserv, cssl)))
         goto err;
 
-    if (!TEST_int_eq(SSL_write(cssl, msg, msglen), msglen))
+    if (!TEST_int_eq(SSL_write(cssl, msg, (int)msglen), (int)msglen))
         goto err;
 
     ossl_quic_tserver_tick(qtserv);
-    if (!TEST_true(ossl_quic_tserver_read(qtserv, buf, sizeof(buf), &bytesread)))
+    if (!TEST_true(ossl_quic_tserver_read(qtserv, 0, buf, sizeof(buf), &bytesread)))
         goto err;
 
     /*
@@ -57,7 +57,7 @@ static int test_basic(void)
         goto err;
 
     testresult = 1;
- err:
+err:
     SSL_free(cssl);
     ossl_quic_tserver_free(qtserv);
     SSL_CTX_free(cctx);
@@ -68,7 +68,7 @@ static int test_basic(void)
  * Test that adding an unknown frame type is handled correctly
  */
 static int add_unknown_frame_cb(QTEST_FAULT *fault, QUIC_PKT_HDR *hdr,
-                                unsigned char *buf, size_t len, void *cbarg)
+    unsigned char *buf, size_t len, void *cbarg)
 {
     static size_t done = 0;
     /*
@@ -85,7 +85,7 @@ static int add_unknown_frame_cb(QTEST_FAULT *fault, QUIC_PKT_HDR *hdr,
         return 1;
 
     return qtest_fault_prepend_frame(fault, unknown_frame,
-                                     sizeof(unknown_frame));
+        sizeof(unknown_frame));
 }
 
 static int test_unknown_frame(void)
@@ -99,12 +99,13 @@ static int test_unknown_frame(void)
     unsigned char buf[80];
     size_t byteswritten;
     QTEST_FAULT *fault = NULL;
+    uint64_t sid = UINT64_MAX;
 
     if (!TEST_ptr(cctx))
         goto err;
 
-    if (!TEST_true(qtest_create_quic_objects(NULL, cctx, cert, privkey, 0,
-                                             &qtserv, &cssl, &fault)))
+    if (!TEST_true(qtest_create_quic_objects(NULL, cctx, NULL, cert, privkey, 0,
+            &qtserv, &cssl, &fault, NULL)))
         goto err;
 
     if (!TEST_true(qtest_create_quic_connection(qtserv, cssl)))
@@ -115,19 +116,23 @@ static int test_unknown_frame(void)
      * type
      */
     if (!TEST_true(qtest_fault_set_packet_plain_listener(fault,
-                                                         add_unknown_frame_cb,
-                                                         NULL)))
+            add_unknown_frame_cb,
+            NULL)))
         goto err;
 
-    if (!TEST_true(ossl_quic_tserver_write(qtserv, (unsigned char *)msg, msglen,
-                                           &byteswritten)))
+    if (!TEST_true(ossl_quic_tserver_stream_new(qtserv, /*is_uni=*/0, &sid))
+        || !TEST_uint64_t_eq(sid, 1))
+        goto err;
+
+    if (!TEST_true(ossl_quic_tserver_write(qtserv, sid, (unsigned char *)msg, msglen,
+            &byteswritten)))
         goto err;
 
     if (!TEST_size_t_eq(msglen, byteswritten))
         goto err;
 
     ossl_quic_tserver_tick(qtserv);
-    if (!TEST_true(SSL_tick(cssl)))
+    if (!TEST_true(SSL_handle_events(cssl)))
         goto err;
 
     if (!TEST_int_le(ret = SSL_read(cssl, buf, sizeof(buf)), 0))
@@ -136,25 +141,15 @@ static int test_unknown_frame(void)
     if (!TEST_int_eq(SSL_get_error(cssl, ret), SSL_ERROR_SSL))
         goto err;
 
-#if 0
-    /*
-     * TODO(QUIC): We should expect an error on the queue after this - but we
-     * don't have it yet.
-     * Note, just raising the error in the obvious place causes SSL_tick() to
-     * succeed, but leave a suprious error on the stack. We need to either
-     * allow SSL_tick() to fail, or somehow delay the raising of the error
-     * until the SSL_read() call.
-     */
     if (!TEST_int_eq(ERR_GET_REASON(ERR_peek_error()),
-                     SSL_R_UNKNOWN_FRAME_TYPE_RECEIVED))
+            SSL_R_QUIC_PROTOCOL_ERROR))
         goto err;
-#endif
 
-    if (!TEST_true(qtest_check_server_protocol_err(qtserv)))
+    if (!TEST_true(qtest_check_server_frame_encoding_err(qtserv)))
         goto err;
 
     testresult = 1;
- err:
+err:
     qtest_fault_free(fault);
     SSL_free(cssl);
     ossl_quic_tserver_free(qtserv);
@@ -166,36 +161,46 @@ static int test_unknown_frame(void)
  * Test that a server that fails to provide transport params cannot be
  * connected to.
  */
-static int drop_transport_params_cb(QTEST_FAULT *fault,
-                                    QTEST_ENCRYPTED_EXTENSIONS *ee,
-                                    size_t eelen, void *encextcbarg)
+static int drop_extensions_cb(QTEST_FAULT *fault,
+    QTEST_ENCRYPTED_EXTENSIONS *ee,
+    size_t eelen, void *encextcbarg)
 {
-    if (!qtest_fault_delete_extension(fault,
-                                      TLSEXT_TYPE_quic_transport_parameters,
-                                      ee->extensions, &ee->extensionslen))
+    int *ext = (int *)encextcbarg;
+
+    if (!qtest_fault_delete_extension(fault, *ext, ee->extensions,
+            &ee->extensionslen, NULL))
         return 0;
 
     return 1;
 }
 
-static int test_no_transport_params(void)
+static int test_drop_extensions(int idx)
 {
     int testresult = 0;
     SSL_CTX *cctx = SSL_CTX_new(OSSL_QUIC_client_method());
     QUIC_TSERVER *qtserv = NULL;
     SSL *cssl = NULL;
     QTEST_FAULT *fault = NULL;
+    int ext, err;
 
     if (!TEST_ptr(cctx))
         goto err;
 
-    if (!TEST_true(qtest_create_quic_objects(NULL, cctx, cert, privkey, 0,
-                                             &qtserv, &cssl, &fault)))
+    if (!TEST_true(qtest_create_quic_objects(NULL, cctx, NULL, cert, privkey, 0,
+            &qtserv, &cssl, &fault, NULL)))
         goto err;
 
+    if (idx == 0) {
+        ext = TLSEXT_TYPE_quic_transport_parameters;
+        err = OSSL_QUIC_ERR_CRYPTO_MISSING_EXT;
+    } else {
+        ext = TLSEXT_TYPE_application_layer_protocol_negotiation;
+        err = OSSL_QUIC_ERR_CRYPTO_NO_APP_PROTO;
+    }
+
     if (!TEST_true(qtest_fault_set_hand_enc_ext_listener(fault,
-                                                         drop_transport_params_cb,
-                                                         NULL)))
+            drop_extensions_cb,
+            &ext)))
         goto err;
 
     /*
@@ -205,11 +210,11 @@ static int test_no_transport_params(void)
     if (!TEST_false(qtest_create_quic_connection(qtserv, cssl)))
         goto err;
 
-    if (!TEST_true(qtest_check_server_protocol_err(qtserv)))
+    if (!TEST_true(qtest_check_server_transport_err(qtserv, err)))
         goto err;
 
     testresult = 1;
- err:
+err:
     qtest_fault_free(fault);
     SSL_free(cssl);
     ossl_quic_tserver_free(qtserv);
@@ -223,7 +228,7 @@ static int test_no_transport_params(void)
 static int docorrupt = 0;
 
 static int on_packet_cipher_cb(QTEST_FAULT *fault, QUIC_PKT_HDR *hdr,
-                               unsigned char *buf, size_t len, void *cbarg)
+    unsigned char *buf, size_t len, void *cbarg)
 {
     if (!docorrupt || len == 0)
         return 1;
@@ -235,7 +240,7 @@ static int on_packet_cipher_cb(QTEST_FAULT *fault, QUIC_PKT_HDR *hdr,
 }
 
 static int on_datagram_cb(QTEST_FAULT *fault, BIO_MSG *m, size_t stride,
-                          void *cbarg)
+    void *cbarg)
 {
     if (!docorrupt || m->data_len == 0)
         return 1;
@@ -263,25 +268,27 @@ static int test_corrupted_data(int idx)
     size_t msglen = strlen(msg);
     unsigned char buf[80];
     size_t bytesread, byteswritten;
+    uint64_t sid = UINT64_MAX;
 
     if (!TEST_ptr(cctx))
         goto err;
 
-    if (!TEST_true(qtest_create_quic_objects(NULL, cctx, cert, privkey, 0,
-                                             &qtserv, &cssl, &fault)))
+    if (!TEST_true(qtest_create_quic_objects(NULL, cctx, NULL, cert, privkey,
+            QTEST_FLAG_FAKE_TIME, &qtserv,
+            &cssl, &fault, NULL)))
         goto err;
 
     if (idx == 0) {
         /* Listen for encrypted packets being sent */
         if (!TEST_true(qtest_fault_set_packet_cipher_listener(fault,
-                                                              on_packet_cipher_cb,
-                                                              NULL)))
+                on_packet_cipher_cb,
+                NULL)))
             goto err;
     } else {
         /* Listen for datagrams being sent */
         if (!TEST_true(qtest_fault_set_datagram_listener(fault,
-                                                         on_datagram_cb,
-                                                         NULL)))
+                on_datagram_cb,
+                NULL)))
             goto err;
     }
     if (!TEST_true(qtest_create_quic_connection(qtserv, cssl)))
@@ -290,12 +297,16 @@ static int test_corrupted_data(int idx)
     /* Corrupt the next server packet*/
     docorrupt = 1;
 
+    if (!TEST_true(ossl_quic_tserver_stream_new(qtserv, /*is_uni=*/0, &sid))
+        || !TEST_uint64_t_eq(sid, 1))
+        goto err;
+
     /*
      * Send first 5 bytes of message. This will get corrupted and is treated as
      * "lost"
      */
-    if (!TEST_true(ossl_quic_tserver_write(qtserv, (unsigned char *)msg, 5,
-                                           &byteswritten)))
+    if (!TEST_true(ossl_quic_tserver_write(qtserv, sid, (unsigned char *)msg, 5,
+            &byteswritten)))
         goto err;
 
     if (!TEST_size_t_eq(byteswritten, 5))
@@ -305,20 +316,13 @@ static int test_corrupted_data(int idx)
      * Introduce a small delay so that the above packet has time to be detected
      * as lost. Loss detection times are based on RTT which should be very
      * fast for us since there isn't really a network. The loss delay timer is
-     * always at least 1ms though. We sleep for 100ms.
-     * TODO(QUIC): This assumes the calculated RTT will always be way less than
-     * 100ms - which it should be...but can we always guarantee this? An
-     * alternative might be to put in our own ossl_time_now() implementation for
-     * these tests and control the timer as part of the test. This approach has
-     * the added advantage that the test will behave reliably when run in a
-     * debugger. Without it may get unreliable debugging results. This would
-     * require some significant refactoring of the ssl/quic code though.
+     * always at least 1ms though. We skip forward 100ms
      */
-    OSSL_sleep(100);
+    qtest_add_time(100);
 
     /* Send rest of message */
-    if (!TEST_true(ossl_quic_tserver_write(qtserv, (unsigned char *)msg + 5,
-                                           msglen - 5, &byteswritten)))
+    if (!TEST_true(ossl_quic_tserver_write(qtserv, sid, (unsigned char *)msg + 5,
+            msglen - 5, &byteswritten)))
         goto err;
 
     if (!TEST_size_t_eq(byteswritten, msglen - 5))
@@ -329,7 +333,7 @@ static int test_corrupted_data(int idx)
      * "lost". We also process the second packet which should be decrypted
      * successfully. Therefore we ack the frames in it
      */
-    if (!TEST_true(SSL_tick(cssl)))
+    if (!TEST_true(SSL_handle_events(cssl)))
         goto err;
 
     /*
@@ -339,7 +343,7 @@ static int test_corrupted_data(int idx)
     ossl_quic_tserver_tick(qtserv);
 
     /* Receive and process the newly arrived message data resend */
-    if (!TEST_true(SSL_tick(cssl)))
+    if (!TEST_true(SSL_handle_events(cssl)))
         goto err;
 
     /* The whole message should now have arrived */
@@ -357,7 +361,7 @@ static int test_corrupted_data(int idx)
         goto err;
 
     testresult = 1;
- err:
+err:
     qtest_fault_free(fault);
     SSL_free(cssl);
     ossl_quic_tserver_free(qtserv);
@@ -389,12 +393,12 @@ int setup_tests(void)
 
     ADD_TEST(test_basic);
     ADD_TEST(test_unknown_frame);
-    ADD_TEST(test_no_transport_params);
+    ADD_ALL_TESTS(test_drop_extensions, 2);
     ADD_ALL_TESTS(test_corrupted_data, 2);
 
     return 1;
 
- err:
+err:
     OPENSSL_free(cert);
     OPENSSL_free(privkey);
     return 0;

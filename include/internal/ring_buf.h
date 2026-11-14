@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2022-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -8,10 +8,16 @@
  */
 
 #ifndef OSSL_INTERNAL_RING_BUF_H
-# define OSSL_INTERNAL_RING_BUF_H
-# pragma once
+#define OSSL_INTERNAL_RING_BUF_H
+#pragma once
 
-# include <openssl/e_os2.h>              /* For 'ossl_inline' */
+#include <assert.h>
+#include <string.h>
+
+#include <openssl/e_os2.h> /* For 'ossl_inline' */
+#include <openssl/crypto.h>
+
+#include "internal/safe_math.h"
 
 /*
  * ==================================================================
@@ -22,22 +28,26 @@
  * but not yet culled will not be overwritten, and can be restored.
  */
 struct ring_buf {
-    void       *start;
-    size_t      alloc;        /* size of buffer allocation in bytes */
+    void *start;
+    size_t alloc; /* size of buffer allocation in bytes */
 
     /*
      * Logical offset of the head (where we append to). This is the current size
      * of the QUIC stream. This increases monotonically.
      */
-    uint64_t    head_offset;
+    uint64_t head_offset;
 
     /*
      * Logical offset of the cull tail. Data is no longer needed and is
      * deallocated as the cull tail advances, which occurs as data is
      * acknowledged. This increases monotonically.
      */
-    uint64_t    ctail_offset;
+    uint64_t ctail_offset;
 };
+
+OSSL_SAFE_MATH_UNSIGNED(u64, uint64_t)
+
+#define MAX_OFFSET (((uint64_t)1) << 62) /* QUIC-imposed limit */
 
 static ossl_inline int ring_buf_init(struct ring_buf *r)
 {
@@ -47,9 +57,12 @@ static ossl_inline int ring_buf_init(struct ring_buf *r)
     return 1;
 }
 
-static ossl_inline void ring_buf_destroy(struct ring_buf *r)
+static ossl_inline void ring_buf_destroy(struct ring_buf *r, int cleanse)
 {
-    OPENSSL_free(r->start);
+    if (cleanse)
+        OPENSSL_clear_free(r->start, r->alloc);
+    else
+        OPENSSL_free(r->start);
     r->start = NULL;
     r->alloc = 0;
 }
@@ -65,17 +78,21 @@ static ossl_inline size_t ring_buf_avail(struct ring_buf *r)
 }
 
 static ossl_inline int ring_buf_write_at(struct ring_buf *r,
-                                         uint64_t logical_offset,
-                                         const unsigned char *buf,
-                                         size_t buf_len)
+    uint64_t logical_offset,
+    const unsigned char *buf,
+    size_t buf_len)
 {
     size_t avail, idx, l;
     unsigned char *start = r->start;
-    int i;
+    int i, err = 0;
 
     avail = ring_buf_avail(r);
     if (logical_offset < r->ctail_offset
-        || logical_offset + buf_len > r->head_offset + avail)
+        || safe_add_u64(logical_offset, buf_len, &err)
+            > safe_add_u64(r->head_offset, avail, &err)
+        || safe_add_u64(r->head_offset, buf_len, &err)
+            > MAX_OFFSET
+        || err)
         return 0;
 
     for (i = 0; buf_len > 0 && i < 2; ++i) {
@@ -99,21 +116,22 @@ static ossl_inline int ring_buf_write_at(struct ring_buf *r,
 }
 
 static ossl_inline size_t ring_buf_push(struct ring_buf *r,
-                                        const unsigned char *buf,
-                                        size_t buf_len)
+    const unsigned char *buf,
+    size_t buf_len)
 {
-    size_t pushed = 0, avail, idx, l, i;
+    size_t pushed = 0, avail, idx, l;
     unsigned char *start = r->start;
 
-    for (i = 0;; ++i) {
+    for (;;) {
         avail = ring_buf_avail(r);
         if (buf_len > avail)
             buf_len = avail;
 
+        if (buf_len > MAX_OFFSET - r->head_offset)
+            buf_len = (size_t)(MAX_OFFSET - r->head_offset);
+
         if (buf_len == 0)
             break;
-
-        assert(i < 2);
 
         idx = r->head_offset % r->alloc;
         l = r->alloc - idx;
@@ -121,18 +139,18 @@ static ossl_inline size_t ring_buf_push(struct ring_buf *r,
             l = buf_len;
 
         memcpy(start + idx, buf, l);
-        r->head_offset  += l;
-        buf             += l;
-        buf_len         -= l;
-        pushed          += l;
+        r->head_offset += l;
+        buf += l;
+        buf_len -= l;
+        pushed += l;
     }
 
     return pushed;
 }
 
 static ossl_inline const unsigned char *ring_buf_get_ptr(const struct ring_buf *r,
-                                                         uint64_t logical_offset,
-                                                         size_t *max_len)
+    uint64_t logical_offset,
+    size_t *max_len)
 {
     unsigned char *start = r->start;
     size_t idx;
@@ -157,9 +175,9 @@ static ossl_inline const unsigned char *ring_buf_get_ptr(const struct ring_buf *
  * The ring buffer state is not changed.
  */
 static ossl_inline int ring_buf_get_buf_at(const struct ring_buf *r,
-                                           uint64_t logical_offset,
-                                           const unsigned char **buf,
-                                           size_t *buf_len)
+    uint64_t logical_offset,
+    const unsigned char **buf,
+    size_t *buf_len)
 {
     const unsigned char *start = r->start;
     size_t idx, l;
@@ -168,28 +186,46 @@ static ossl_inline int ring_buf_get_buf_at(const struct ring_buf *r,
         return 0;
 
     if (r->alloc == 0) {
-        *buf        = NULL;
-        *buf_len    = 0;
+        *buf = NULL;
+        *buf_len = 0;
         return 1;
     }
 
     idx = logical_offset % r->alloc;
-    l   = (size_t)(r->head_offset - logical_offset);
+    l = (size_t)(r->head_offset - logical_offset);
     if (l > r->alloc - idx)
         l = r->alloc - idx;
 
-    *buf        = start + idx;
-    *buf_len    = l;
+    *buf = start + idx;
+    *buf_len = l;
     return 1;
 }
 
 static ossl_inline void ring_buf_cpop_range(struct ring_buf *r,
-                                            uint64_t start, uint64_t end)
+    uint64_t start, uint64_t end,
+    int cleanse)
 {
     assert(end >= start);
 
-    if (start > r->ctail_offset)
+    if (start > r->ctail_offset || end >= MAX_OFFSET)
         return;
+
+    if (cleanse && r->alloc > 0 && end > r->ctail_offset) {
+        size_t idx = r->ctail_offset % r->alloc;
+        uint64_t cleanse_end = end + 1;
+        size_t l;
+
+        if (cleanse_end > r->head_offset)
+            cleanse_end = r->head_offset;
+        l = (size_t)(cleanse_end - r->ctail_offset);
+        if (l > r->alloc - idx) {
+            OPENSSL_cleanse((unsigned char *)r->start + idx, r->alloc - idx);
+            l -= r->alloc - idx;
+            idx = 0;
+        }
+        if (l > 0)
+            OPENSSL_cleanse((unsigned char *)r->start + idx, l);
+    }
 
     r->ctail_offset = end + 1;
     /* Allow culling unpushed data */
@@ -197,9 +233,10 @@ static ossl_inline void ring_buf_cpop_range(struct ring_buf *r,
         r->head_offset = r->ctail_offset;
 }
 
-static ossl_inline int ring_buf_resize(struct ring_buf *r, size_t num_bytes)
+static ossl_inline int ring_buf_resize(struct ring_buf *r, size_t num_bytes,
+    int cleanse)
 {
-    struct ring_buf rnew = {0};
+    struct ring_buf rnew = { 0 };
     const unsigned char *src = NULL;
     size_t src_len = 0, copied = 0;
 
@@ -213,9 +250,9 @@ static ossl_inline int ring_buf_resize(struct ring_buf *r, size_t num_bytes)
     if (rnew.start == NULL)
         return 0;
 
-    rnew.alloc          = num_bytes;
-    rnew.head_offset    = r->head_offset - ring_buf_used(r);
-    rnew.ctail_offset   = rnew.head_offset;
+    rnew.alloc = num_bytes;
+    rnew.head_offset = r->head_offset - ring_buf_used(r);
+    rnew.ctail_offset = rnew.head_offset;
 
     for (;;) {
         if (!ring_buf_get_buf_at(r, r->ctail_offset + copied, &src, &src_len)) {
@@ -235,11 +272,11 @@ static ossl_inline int ring_buf_resize(struct ring_buf *r, size_t num_bytes)
     }
 
     assert(rnew.head_offset == r->head_offset);
-    rnew.ctail_offset   = r->ctail_offset;
+    rnew.ctail_offset = r->ctail_offset;
 
-    OPENSSL_free(r->start);
+    ring_buf_destroy(r, cleanse);
     memcpy(r, &rnew, sizeof(*r));
     return 1;
 }
 
-#endif                          /* OSSL_INTERNAL_RING_BUF_H */
+#endif /* OSSL_INTERNAL_RING_BUF_H */

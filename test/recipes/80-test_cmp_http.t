@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# Copyright 2007-2021 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2007-2026 The OpenSSL Project Authors. All Rights Reserved.
 # Copyright Nokia 2007-2019
 # Copyright Siemens AG 2015-2019
 #
@@ -26,10 +26,14 @@ plan skip_all => "These tests are not supported in a fuzz build"
 
 plan skip_all => "These tests are not supported in a no-cmp build"
     if disabled("cmp");
-plan skip_all => "These tests are not supported in a no-ec build"
-    if disabled("ec");
+plan skip_all => "These tests are not supported in a no-ecx build"
+    if disabled("ecx"); # EC and EDDSA test certs, e.g., in Mock/newWithNew.pem
 plan skip_all => "These tests are not supported in a no-sock build"
     if disabled("sock");
+plan skip_all => "These tests are not supported in a no-http build"
+    if disabled("http");
+plan skip_all => "These tests are not supported in a no-cms build"
+    if disabled("cms"); # central key pair generation
 
 plan skip_all => "Tests involving local HTTP server not available on Windows or VMS"
     if $^O =~ /^(VMS|MSWin32|msys)$/;
@@ -52,7 +56,7 @@ my @app = qw(openssl cmp);
 # the server-dependent client configuration consists of:
 my $ca_dn;      # The CA's Distinguished Name
 my $server_dn;  # The server's Distinguished Name
-my $server_host;# The server's hostname or IP address
+my $server_host;# The server's hostname or IP address, '*' means to be determined from server output
 my $server_port;# The server's port
 my $server_tls; # The server's TLS port, if any, or 0
 my $server_path;# The server's CMP alias
@@ -128,11 +132,10 @@ my @all_aspects = ("connection", "verification", "credentials", "commands", "enr
 @all_aspects = split /\s+/, $ENV{OPENSSL_CMP_ASPECTS} if $ENV{OPENSSL_CMP_ASPECTS};
 # set env variable, e.g., OPENSSL_CMP_ASPECTS="commands enrollment" to select specific aspects
 
+my $Mock_serverlog;
 my $faillog;
-my $file = $ENV{HARNESS_FAILLOG}; # pathname relative to result_dir
-if ($file) {
-    open($faillog, ">", $file) or die "Cannot open '$file' for writing: $!";
-}
+my $faillog_file = $ENV{HARNESS_FAILLOG} // "failed_client_invocations.txt"; # pathname relative to result_dir
+open($faillog, ">", $faillog_file) or die "Cannot open '$faillog_file' for writing: $!";
 
 sub test_cmp_http {
     my $server_name = shift;
@@ -142,7 +145,7 @@ sub test_cmp_http {
     my $title = shift;
     my $params = shift;
     my $expected_result = shift;
-    $params = [ '-server', "127.0.0.1:$server_port", @$params ]
+    $params = [ '-server', "$server_host:$server_port", @$params ]
         if ($server_name eq "Mock" && !(grep { $_ eq '-server' } @$params));
     my $cmd = app([@app, @$params]);
 
@@ -173,6 +176,17 @@ sub test_cmp_http_aspect {
         }
     };
     # not unlinking test.cert.pem, test.cacerts.pem, and test.extracerts.pem
+}
+
+sub print_file_prefixed {
+    my ($file, $desc) = @_;
+    print "$desc (each line prefixed by \"# \"):\n";
+    if (open F, $file) {
+        while (<F>) {
+            print "# $_";
+        }
+        close F;
+    }
 }
 
 # The input files for the tests done here dynamically depend on the test server
@@ -213,14 +227,28 @@ indir data_dir() => sub {
                     test_cmp_http_aspect($server_name, $aspect, $tests);
                 };
             };
-            stop_server($server_name, $pid) if $pid;
-            ok(1, "$server_name server has terminated");
+
+            if ($server_name eq "Mock") {
+                stop_server($server_name, $pid) if $pid;
+                ok(1, "$server_name server has terminated");
+
+                if (-s $faillog) {
+                    indir "Mock" => sub {
+                        print_file_prefixed($Mock_serverlog, "$server_name server STDERR output is");
+                    }
+                }
+            }
           }
         }
     };
 };
 
 close($faillog) if $faillog;
+if (-s $faillog_file) {
+    print "# ------------------------------------------------------------------------------\n";
+    print_file_prefixed($faillog_file, "Failed client invocations are");
+    print "# ------------------------------------------------------------------------------\n";
+}
 
 sub load_tests {
     my $server_name = shift;
@@ -229,12 +257,44 @@ sub load_tests {
     my $file = data_file("test_$aspect.csv");
     my $result_dir = result_dir();
     my @result;
+    my ($cert_issuer, $cert_serial) = ("", "");
+    if ($server_name eq "Mock" && $aspect eq "commands") {
+        my $cert_file;
+        if (open(my $cnf, '<', 'server.cnf')) {
+            while (<$cnf>) {
+                if (/^\s*rsp_cert\s*=\s*(\S+)/) {
+                    $cert_file = $1;
+                    last;
+                }
+            }
+            close($cnf);
+        }
+        if (defined $cert_file && -f $cert_file) {
+            my @issuer_out = run(app([qw(openssl x509 -noout -issuer -nameopt compat -in),
+                                      $cert_file]), capture => 1);
+            if (@issuer_out) {
+                ($cert_issuer = $issuer_out[0]) =~ s/^issuer=//;
+                chomp $cert_issuer;
+            }
+            my @serial_out = run(app([qw(openssl x509 -noout -serial -in), $cert_file]),
+                                 capture => 1);
+            if (@serial_out) {
+                ($cert_serial = $serial_out[0]) =~ s/^serial=/0x/;
+                chomp $cert_serial;
+            }
+        }
+        die "Cannot extract cert issuer or serial"
+            . (defined $cert_file ? " from '$cert_file'" : " (rsp_cert not found in server.cnf)")
+            if $cert_issuer eq "" || $cert_serial eq "";
+    }
 
     open(my $data, '<', $file) || die "Cannot open '$file' for reading: $!";
   LOOP:
     while (my $line = <$data>) {
         chomp $line;
         $line =~ s{\r\n}{\n}g; # adjust line endings
+        $line =~ s{_CERT_ISSUER}{$cert_issuer}g;
+        $line =~ s{_CERT_SERIAL}{$cert_serial}g;
         $line =~ s{_CA_DN}{$ca_dn}g;
         $line =~ s{_SERVER_DN}{$server_dn}g;
         $line =~ s{_SERVER_HOST}{$server_host}g;
@@ -250,14 +310,15 @@ sub load_tests {
 
         next LOOP if $server_tls == 0 && $line =~ m/,\s*-tls_used\s*,/;
         my $noproxy = $no_proxy;
+        my $server_plain = $server_host =~ m/^\[(.*)\]$/ ? $1 : $server_host;
         if ($line =~ m/,\s*-no_proxy\s*,(.*?)(,|$)/) {
             $noproxy = $1;
-        } elsif ($server_host eq "127.0.0.1") {
+        } elsif ($server_plain eq "127.0.0.1" || $server_plain eq "::1") {
             # do connections to localhost (e.g., mock server) without proxy
-            $line =~ s{-section,,}{-section,,-no_proxy,127.0.0.1,} ;
+            $line =~ s{-section,,}{-section,,-no_proxy,$server_plain,} ;
         }
         if ($line =~ m/,\s*-proxy\s*,/) {
-            next LOOP if $no_proxy && ($noproxy =~ $server_host);
+            next LOOP if $no_proxy && ($noproxy =~ $server_plain);
         } else {
             $line =~ s{-section,,}{-section,,-proxy,$proxy,};
         }
@@ -275,6 +336,7 @@ sub load_tests {
         my $title = $fields[$description];
         next LOOP if (!defined($expected_result)
                       || ($expected_result ne 0 && $expected_result ne 1));
+        next LOOP if ($line =~ m/-server,\[.*:.*\]/ && !have_IPv6());
         @fields = grep {$_ ne 'BLANK'} @fields[$description + 1 .. @fields - 1];
         push @result, [$title, \@fields, $expected_result];
     }
@@ -289,33 +351,49 @@ sub start_server {
                           $args ? $args : ()]), display => 1);
     print "Current directory is ".getcwd()."\n";
     print "Launching $server_name server: $cmd\n";
-    my $pid = open($server_fh, "$cmd|");
+    $Mock_serverlog = result_dir()."/Mock_server_STDERR.txt";
+    my $pid = open($server_fh, "$cmd 2>$Mock_serverlog |");
     unless ($pid) {
         print "Error launching $cmd, cannot obtain $server_name server PID";
         return 0;
     }
     print "$server_name server PID=$pid\n";
 
-    if ($server_port == 0) {
-        # Find out the actual server port and possibly different PID
-        $pid = 0;
+    if ($server_host eq '*' || $server_port == 0) {
+        my $server_output = "";
+        # Determine the actual server host and port and possibly different PID from server output
+        my ($host, $port);
+        my $pid0 = $pid;
         while (<$server_fh>) {
+            $server_output .= $_;
             print "$server_name server output: $_";
-            next if m/using section/;
+            next if m/[Uu]sing section/;
             s/\R$//;                # Better chomp
-            ($server_port, $pid) = ($1, $2) if /^ACCEPT\s.*:(\d+) PID=(\d+)$/;
+            ($host, $port, $pid) = ($1, $2, $3)
+                if /^ACCEPT\s(.*?):(\d+) PID=(\d+)$/;
             last; # Do not loop further to prevent hangs on server misbehavior
         }
-    }
-    unless ($server_port > 0) {
-        stop_server($server_name, $pid);
-        print "Cannot get expected output from the $server_name server";
-        return 0;
+        if ($server_host eq '*' && defined $host) {
+            $server_host = "[::1]"     if $host eq "[::]";
+            $server_host = "127.0.0.1" if $host eq "0.0.0.0";
+        }
+        $server_port = $port if $server_port == 0 && defined $port;
+        if ($pid0 != $pid) {
+            # kill the shell process
+            kill('KILL', $pid0);
+            waitpid($pid0, 0);
+        }
+        if ($server_host eq '*' || $server_port == 0) {
+            stop_server($server_name, $pid) if $pid;
+            print "Cannot get server host and port from the $server_name server output: $server_output\n";
+            return 0;
+        }
     }
     $kur_port = $server_port if $kur_port eq "\$server_port";
     $pbm_port = $server_port if $pbm_port eq "\$server_port";
     $server_tls = $server_port if $server_tls;
     return $pid;
+
 }
 
 sub stop_server {

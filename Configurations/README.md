@@ -240,8 +240,14 @@ In each table entry, the following keys are significant:
                                                 is ILP32;
                            RC4_CHAR             RC4 key schedule is made
                                                 up of 'unsigned char's;
+                                                Note: should not be used
+                                                for new configuration
+                                                targets
                            RC4_INT              RC4 key schedule is made
                                                 up of 'unsigned int's;
+                                                Note: should not be used
+                                                for new configuration
+                                                targets
 
 [1] as part of the target configuration, one can have a key called
   `inherit_from` that indicates what other configurations to inherit
@@ -496,7 +502,7 @@ The build-file template is processed with the perl module
 Text::Template, using `{-` and `-}` as delimiters that enclose the
 perl code fragments that generate configuration-dependent content.
 Those perl fragments have access to all the hash variables from
-configdata.pem.
+configdata.pm.
 
 The build-file template is expected to define at least the following
 perl functions in a perl code fragment enclosed with `{-` and `-}`.

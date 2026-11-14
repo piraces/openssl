@@ -1,5 +1,5 @@
 /*
- * Copyright 2005-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2005-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -8,9 +8,10 @@
  */
 
 #include "ssl_local.h"
+#include "internal/ssl_unwrap.h"
 
-int dtls1_write_app_data_bytes(SSL *s, int type, const void *buf_, size_t len,
-                               size_t *written)
+int dtls1_write_app_data_bytes(SSL *s, uint8_t type, const void *buf_,
+    size_t len, size_t *written)
 {
     int i;
     SSL_CONNECTION *sc = SSL_CONNECTION_FROM_SSL_ONLY(s);
@@ -18,8 +19,30 @@ int dtls1_write_app_data_bytes(SSL *s, int type, const void *buf_, size_t len,
     if (sc == NULL)
         return -1;
 
+    /*
+     * If we are supposed to be sending a KeyUpdate or NewSessionTicket then go
+     * into init - in which case we should finish doing that first.
+     */
+    if (sc->key_update != SSL_KEY_UPDATE_NONE || sc->ext.extra_tickets_expected > 0)
+        ossl_statem_set_in_init(sc, 1);
+
     if (SSL_in_init(s) && !ossl_statem_get_in_handshake(sc)) {
         i = sc->handshake_func(s);
+
+        /*
+         * DTLS 1.3: finishing a pending ACK ends a call at TLS_ST_OK, so the
+         * KeyUpdate or ticket still owed is only built by the next call. A
+         * call can also finish with something new owed, such as a response to
+         * a KeyUpdate that arrived while it waited for an ACK. Keep calling
+         * until nothing is owed, before any application data is sent. A call
+         * that needs I/O or fails ends the loop.
+         */
+        while (i > 0 && SSL_CONNECTION_IS_DTLS13(sc)
+            && (sc->key_update != SSL_KEY_UPDATE_NONE
+                || sc->ext.extra_tickets_expected > 0)) {
+            ossl_statem_set_in_init(sc, 1);
+            i = sc->handshake_func(s);
+        }
         if (i < 0)
             return i;
         if (i == 0) {
@@ -39,7 +62,7 @@ int dtls1_write_app_data_bytes(SSL *s, int type, const void *buf_, size_t len,
 int dtls1_dispatch_alert(SSL *ssl)
 {
     int i, j;
-    void (*cb) (const SSL *ssl, int type, int val) = NULL;
+    void (*cb)(const SSL *ssl, int type, int val) = NULL;
     unsigned char buf[DTLS1_AL_HEADER_LENGTH];
     unsigned char *ptr = &buf[0];
     size_t written;
@@ -63,7 +86,7 @@ int dtls1_dispatch_alert(SSL *ssl)
 
         if (s->msg_callback)
             s->msg_callback(1, s->version, SSL3_RT_ALERT, s->s3.send_alert,
-                            2, ssl, s->msg_callback_arg);
+                2, ssl, s->msg_callback_arg);
 
         if (s->info_callback != NULL)
             cb = s->info_callback;

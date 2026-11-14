@@ -28,3 +28,10 @@
 [submodule "cloudflare-quiche"]
 	path = cloudflare-quiche
 	url = https://github.com/cloudflare/quiche
+[submodule "fuzz/corpora"]
+	path = fuzz/corpora
+	url = https://github.com/openssl/fuzz-corpora
+	branch = main
+[submodule "pkcs11-provider"]
+	path = pkcs11-provider
+	url = https://github.com/latchset/pkcs11-provider.git

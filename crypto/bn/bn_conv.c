@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -7,11 +7,11 @@
  * https://www.openssl.org/source/license.html
  */
 
+#include <stdio.h>
+
 #include <openssl/err.h>
 #include "crypto/ctype.h"
 #include "bn_local.h"
-
-static const char Hex[] = "0123456789ABCDEF";
 
 /* Must 'OPENSSL_free' the returned data */
 char *BN_bn2hex(const BIGNUM *a)
@@ -33,14 +33,13 @@ char *BN_bn2hex(const BIGNUM *a)
             /* strip leading zeros */
             v = (int)((a->d[i] >> j) & 0xff);
             if (z || v != 0) {
-                *p++ = Hex[v >> 4];
-                *p++ = Hex[v & 0x0f];
+                p += ossl_to_hex(p, v);
                 z = 1;
             }
         }
     }
     *p = '\0';
- err:
+err:
     return buf;
 }
 
@@ -64,9 +63,9 @@ char *BN_bn2dec(const BIGNUM *a)
      */
     i = BN_num_bits(a) * 3;
     num = (i / 10 + i / 1000 + 1) + 1;
-    tbytes = num + 3;   /* negative and terminator and one spare? */
+    tbytes = num + 3; /* negative and terminator and one spare? */
     bn_data_num = num / BN_DEC_NUM + 1;
-    bn_data = OPENSSL_malloc(bn_data_num * sizeof(BN_ULONG));
+    bn_data = OPENSSL_malloc_array(bn_data_num, sizeof(BN_ULONG));
     buf = OPENSSL_malloc(tbytes);
     if (buf == NULL || bn_data == NULL)
         goto err;
@@ -96,20 +95,20 @@ char *BN_bn2dec(const BIGNUM *a)
          * the last one needs truncation. The blocks need to be reversed in
          * order.
          */
-        n = BIO_snprintf(p, tbytes - (size_t)(p - buf), BN_DEC_FMT1, *lp);
-        if (n < 0)
+        n = snprintf(p, tbytes - (size_t)(p - buf), BN_DEC_FMT1, *lp);
+        if (n < 0 || (size_t)n >= tbytes - (size_t)(p - buf))
             goto err;
         p += n;
         while (lp != bn_data) {
             lp--;
-            n = BIO_snprintf(p, tbytes - (size_t)(p - buf), BN_DEC_FMT2, *lp);
-            if (n < 0)
+            n = snprintf(p, tbytes - (size_t)(p - buf), BN_DEC_FMT2, *lp);
+            if (n < 0 || (size_t)n >= tbytes - (size_t)(p - buf))
                 goto err;
             p += n;
         }
     }
     ok = 1;
- err:
+err:
     OPENSSL_free(bn_data);
     BN_free(t);
     if (ok)
@@ -161,7 +160,7 @@ int BN_hex2bn(BIGNUM **bn, const char *a)
     if (bn_expand(ret, i * 4) == NULL)
         goto err;
 
-    j = i;                      /* least significant 'hex' */
+    j = i; /* least significant 'hex' */
     m = 0;
     h = 0;
     while (j > 0) {
@@ -171,7 +170,7 @@ int BN_hex2bn(BIGNUM **bn, const char *a)
             c = a[j - m];
             k = OPENSSL_hexchar2int(c);
             if (k < 0)
-                k = 0;          /* paranoia */
+                k = 0; /* paranoia */
             l = (l << 4) | k;
 
             if (--m <= 0) {
@@ -190,7 +189,7 @@ int BN_hex2bn(BIGNUM **bn, const char *a)
     if (ret->top != 0)
         ret->neg = neg;
     return num;
- err:
+err:
     if (*bn == NULL)
         BN_free(ret);
     return 0;
@@ -260,7 +259,7 @@ int BN_dec2bn(BIGNUM **bn, const char *a)
     if (ret->top != 0)
         ret->neg = neg;
     return num;
- err:
+err:
     if (*bn == NULL)
         BN_free(ret);
     return 0;

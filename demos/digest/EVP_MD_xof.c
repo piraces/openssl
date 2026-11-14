@@ -1,5 +1,5 @@
 /*-
- * Copyright 2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2022-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -9,8 +9,10 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/crypto.h>
 #include <openssl/core_names.h>
 
 /*
@@ -27,13 +29,13 @@
  */
 
 /* Our input to the XOF hash function. */
-const char message[] = "This is a test message.";
+static const char message[] = "This is a test message.";
 
 /* Expected output when an output length of 20 bytes is used. */
-static const char known_answer[] = {
-  0x52, 0x97, 0x93, 0x78, 0x27, 0x58, 0x7d, 0x62,
-  0x8b, 0x00, 0x25, 0xb5, 0xec, 0x39, 0x5e, 0x2d,
-  0x7f, 0x3e, 0xd4, 0x19
+static const unsigned char known_answer[] = {
+    0x52, 0x97, 0x93, 0x78, 0x27, 0x58, 0x7d, 0x62,
+    0x8b, 0x00, 0x25, 0xb5, 0xec, 0x39, 0x5e, 0x2d,
+    0x7f, 0x3e, 0xd4, 0x19
 };
 
 /*
@@ -43,7 +45,7 @@ static const char *propq = NULL;
 
 int main(int argc, char **argv)
 {
-    int rv = 1;
+    int ret = EXIT_FAILURE;
     OSSL_LIB_CTX *libctx = NULL;
     EVP_MD *md = NULL;
     EVP_MD_CTX *ctx = NULL;
@@ -53,7 +55,13 @@ int main(int argc, char **argv)
 
     /* Allow digest length to be changed for demonstration purposes. */
     if (argc > 1) {
-        digest_len_i = atoi(argv[1]);
+        unsigned long ul;
+
+        if (!OPENSSL_strtoul(argv[1], NULL, 10, &ul) || ul > INT_MAX) {
+            fprintf(stderr, "Specify a non-negative digest length\n");
+            goto end;
+        }
+        digest_len_i = (int)ul;
         if (digest_len_i <= 0) {
             fprintf(stderr, "Specify a non-negative digest length\n");
             goto end;
@@ -122,11 +130,11 @@ int main(int argc, char **argv)
         }
     }
 
-    rv = 0;
+    ret = EXIT_SUCCESS;
 end:
     OPENSSL_free(digest);
     EVP_MD_CTX_free(ctx);
     EVP_MD_free(md);
     OSSL_LIB_CTX_free(libctx);
-    return rv;
+    return ret;
 }

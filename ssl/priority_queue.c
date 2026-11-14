@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2022-2025 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -12,6 +12,7 @@
 #include <assert.h>
 #include "internal/priority_queue.h"
 #include "internal/safe_math.h"
+#include "internal/numbers.h"
 
 OSSL_SAFE_MATH_UNSIGNED(size_t, size_t)
 
@@ -34,45 +35,42 @@ OSSL_SAFE_MATH_UNSIGNED(size_t, size_t)
  */
 
 struct pq_heap_st {
-    void *data;     /* User supplied data pointer */
-    size_t index;   /* Constant index in elements[] */
+    void *data; /* User supplied data pointer */
+    size_t index; /* Constant index in elements[] */
 };
 
 struct pq_elem_st {
-    size_t posn;    /* Current index in heap[] or link in free list */
+    size_t posn; /* Current index in heap[] or link in free list */
 #ifndef NDEBUG
-    int used;       /* Debug flag indicating that this is in use */
+    int used; /* Debug flag indicating that this is in use */
 #endif
 };
 
-struct ossl_pqueue_st
-{
+struct ossl_pqueue_st {
     struct pq_heap_st *heap;
     struct pq_elem_st *elements;
     int (*compare)(const void *, const void *);
-    size_t htop;        /* Highest used heap element */
-    size_t hmax;        /* Allocated heap & element space */
-    size_t freelist;    /* Index into elements[], start of free element list */
+    size_t htop; /* Highest used heap element */
+    size_t hmax; /* Allocated heap & element space */
+    size_t freelist; /* Index into elements[], start of free element list */
 };
 
 /*
  * The initial and maximum number of elements in the heap.
  */
 static const size_t min_nodes = 8;
-static const size_t max_nodes =
-        SIZE_MAX / (sizeof(struct pq_heap_st) > sizeof(struct pq_elem_st)
-                    ? sizeof(struct pq_heap_st) : sizeof(struct pq_elem_st));
+static const size_t max_nodes = SIZE_MAX / (sizeof(struct pq_heap_st) > sizeof(struct pq_elem_st) ? sizeof(struct pq_heap_st) : sizeof(struct pq_elem_st));
 
 #ifndef NDEBUG
 /* Some basic sanity checking of the data structure */
-# define ASSERT_USED(pq, idx)                                               \
-    assert(pq->elements[pq->heap[idx].index].used);                         \
+#define ASSERT_USED(pq, idx)                        \
+    assert(pq->elements[pq->heap[idx].index].used); \
     assert(pq->elements[pq->heap[idx].index].posn == idx)
-# define ASSERT_ELEM_USED(pq, elem)                                         \
+#define ASSERT_ELEM_USED(pq, elem) \
     assert(pq->elements[elem].used)
 #else
-# define ASSERT_USED(pq, idx)
-# define ASSERT_ELEM_USED(pq, elem)
+#define ASSERT_USED(pq, idx)
+#define ASSERT_ELEM_USED(pq, elem)
 #endif
 
 /*
@@ -264,8 +262,14 @@ void *ossl_pqueue_remove(OSSL_PQUEUE *pq, size_t elem)
 
     ASSERT_USED(pq, n);
 
-    if (n == pq->htop - 1)
+    if (n == pq->htop - 1) {
+        pq->elements[elem].posn = pq->freelist;
+        pq->freelist = elem;
+#ifndef NDEBUG
+        pq->elements[elem].used = 0;
+#endif
         return pq->heap[--pq->htop].data;
+    }
     if (n > 0)
         pqueue_force_bottom(pq, n);
     return ossl_pqueue_pop(pq);
@@ -304,12 +308,12 @@ int ossl_pqueue_reserve(OSSL_PQUEUE *pq, size_t n)
         return 0;
     }
 
-    h = OPENSSL_realloc(pq->heap, new_max * sizeof(*pq->heap));
+    h = OPENSSL_realloc_array(pq->heap, new_max, sizeof(*pq->heap));
     if (h == NULL)
         return 0;
     pq->heap = h;
 
-    e = OPENSSL_realloc(pq->elements, new_max * sizeof(*pq->elements));
+    e = OPENSSL_realloc_array(pq->elements, new_max, sizeof(*pq->elements));
     if (e == NULL)
         return 0;
     pq->elements = e;
@@ -333,8 +337,8 @@ OSSL_PQUEUE *ossl_pqueue_new(int (*compare)(const void *, const void *))
     pq->hmax = min_nodes;
     pq->htop = 0;
     pq->freelist = 0;
-    pq->heap = OPENSSL_malloc(sizeof(*pq->heap) * min_nodes);
-    pq->elements = OPENSSL_malloc(sizeof(*pq->elements) * min_nodes);
+    pq->heap = OPENSSL_malloc_array(min_nodes, sizeof(*pq->heap));
+    pq->elements = OPENSSL_malloc_array(min_nodes, sizeof(*pq->elements));
     if (pq->heap == NULL || pq->elements == NULL) {
         ossl_pqueue_free(pq);
         return NULL;

@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2022-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -8,35 +8,36 @@
  */
 
 #ifndef OSSL_QUIC_DEMUX_H
-# define OSSL_QUIC_DEMUX_H
+#define OSSL_QUIC_DEMUX_H
 
-# include <openssl/ssl.h>
-# include "internal/quic_types.h"
-# include "internal/bio_addr.h"
-# include "internal/time.h"
-# include "internal/list.h"
+#include <openssl/ssl.h>
+#include "internal/quic_types.h"
+#include "internal/quic_predef.h"
+#include "internal/bio_addr.h"
+#include "internal/time.h"
+#include "internal/list.h"
+#include "internal/dgram_demux.h"
 
-# ifndef OPENSSL_NO_QUIC
+#ifndef OPENSSL_NO_QUIC
 
 /*
  * QUIC Demuxer
  * ============
  *
  * The QUIC connection demuxer is the entity responsible for receiving datagrams
- * from the network via a datagram BIO. It parses packet headers to determine
- * each packet's destination connection ID (DCID) and hands off processing of
- * the packet to the correct QUIC Record Layer (QRL)'s RX side (known as the
- * QRX).
+ * from the network via a datagram BIO. It parses the headers of the first
+ * packet in the datagram to determine that packet's DCID and hands off
+ * processing of the entire datagram to a single callback function which can
+ * decide how to handle and route the datagram, for example by looking up
+ * a QRX instance and injecting the URXE into that QRX.
  *
- * A QRX is instantiated per QUIC connection and contains the cryptographic
- * resources needed to decrypt QUIC packets for that connection. Received
- * datagrams are passed from the demuxer to the QRX via a callback registered
- * for a specific DCID by the QRX; thus the demuxer has no specific knowledge of
- * the QRX and is not coupled to it.
- *
- * A connection may have multiple connection IDs associated with it; a QRX
- * handles this simply by registering multiple connection IDs with the demuxer
- * via multiple register calls.
+ * A QRX will typically be instantiated per QUIC connection and contains the
+ * cryptographic resources needed to decrypt QUIC packets for that connection.
+ * However, it is up to the callback function to handle routing, for example by
+ * consulting a LCIDM instance. Thus the demuxer has no specific knowledge of
+ * any QRX and is not coupled to it. All CID knowledge is also externalised into
+ * a LCIDM or other CID state tracking object, without the DEMUX being coupled
+ * to any particular DCID resolution mechanism.
  *
  * URX Queue
  * ---------
@@ -83,56 +84,17 @@
  * same allocation.
  */
 
-typedef struct quic_urxe_st QUIC_URXE;
-
 /* Maximum number of packets we allow to exist in one datagram. */
-#define QUIC_MAX_PKT_PER_URXE       (sizeof(uint64_t) * 8)
+#define QUIC_MAX_PKT_PER_URXE (sizeof(uint64_t) * 8)
 
-struct quic_urxe_st {
-    OSSL_LIST_MEMBER(urxe, QUIC_URXE);
-
-    /*
-     * The URXE data starts after this structure so we don't need a pointer.
-     * data_len stores the current length (i.e., the length of the received
-     * datagram) and alloc_len stores the allocation length. The URXE will be
-     * reallocated if we need a larger allocation than is available, though this
-     * should not be common as we will have a good idea of worst-case MTUs up
-     * front.
-     */
-    size_t          data_len, alloc_len;
-
-    /*
-     * Bitfields per packet. processed indicates the packet has been processed
-     * and must not be processed again, hpr_removed indicates header protection
-     * has already been removed. Used by QRX only; not used by the demuxer.
-     */
-    uint64_t        processed, hpr_removed;
-
-    /*
-     * Address of peer we received the datagram from, and the local interface
-     * address we received it on. If local address support is not enabled, local
-     * is zeroed.
-     */
-    BIO_ADDR        peer, local;
-
-    /*
-     * Time at which datagram was received (or ossl_time_zero()) if a now
-     * function was not provided).
-     */
-    OSSL_TIME       time;
-
-    /*
-     * Used by the QRX to mark whether a datagram has been deferred. Used by the
-     * QRX only; not used by the demuxer.
-     */
-    char            deferred;
-
-    /*
-     * Used by the DEMUX to track if a URXE has been handed out. Used primarily
-     * for debugging purposes.
-     */
-    char            demux_state;
-};
+/*
+ * QUIC_URXE is a typedef to DGRAM_URXE. The DGRAM_URXE structure includes
+ * QUIC-specific fields (processed, hpr_removed, deferred) that are used by
+ * the QRX but ignored by DTLS. This allows list and demuxer operations to
+ * be shared.
+ */
+typedef DGRAM_URXE QUIC_URXE;
+typedef DGRAM_URXE_LIST QUIC_URXE_LIST;
 
 /* Accessors for URXE buffer. */
 static ossl_unused ossl_inline unsigned char *
@@ -147,20 +109,26 @@ ossl_quic_urxe_data_end(const QUIC_URXE *e)
     return ossl_quic_urxe_data(e) + e->data_len;
 }
 
-/* List structure tracking a queue of URXEs. */
-DEFINE_LIST_OF(urxe, QUIC_URXE);
-typedef OSSL_LIST(urxe) QUIC_URXE_LIST;
-
 /*
- * List management helpers. These are used by the demuxer but can also be used
- * by users of the demuxer to manage URXEs.
+ * List management helpers. These delegate to the DGRAM_URXE list functions.
  */
-void ossl_quic_urxe_remove(QUIC_URXE_LIST *l, QUIC_URXE *e);
-void ossl_quic_urxe_insert_head(QUIC_URXE_LIST *l, QUIC_URXE *e);
-void ossl_quic_urxe_insert_tail(QUIC_URXE_LIST *l, QUIC_URXE *e);
+static ossl_unused ossl_inline void
+ossl_quic_urxe_remove(QUIC_URXE_LIST *l, QUIC_URXE *e)
+{
+    ossl_dgram_urxe_remove(l, e);
+}
 
-/* Opaque type representing a demuxer. */
-typedef struct quic_demux_st QUIC_DEMUX;
+static ossl_unused ossl_inline void
+ossl_quic_urxe_insert_head(QUIC_URXE_LIST *l, QUIC_URXE *e)
+{
+    ossl_dgram_urxe_insert_head(l, e);
+}
+
+static ossl_unused ossl_inline void
+ossl_quic_urxe_insert_tail(QUIC_URXE_LIST *l, QUIC_URXE *e)
+{
+    ossl_dgram_urxe_insert_tail(l, e);
+}
 
 /*
  * Called when a datagram is received for a given connection ID.
@@ -169,6 +137,9 @@ typedef struct quic_demux_st QUIC_DEMUX;
  * to mutate this buffer; once the demuxer calls this callback, it will never
  * read the buffer again.
  *
+ * If a DCID was identified for the datagram, dcid is non-NULL; otherwise
+ * it is NULL.
+ *
  * The callee must arrange for ossl_quic_demux_release_urxe or
  * ossl_quic_demux_reinject_urxe to be called on the URXE at some point in the
  * future (this need not be before the callback returns).
@@ -176,7 +147,8 @@ typedef struct quic_demux_st QUIC_DEMUX;
  * At the time the callback is made, the URXE will not be in any queue,
  * therefore the callee can use the prev and next fields as it wishes.
  */
-typedef void (ossl_quic_demux_cb_fn)(QUIC_URXE *e, void *arg);
+typedef void(ossl_quic_demux_cb_fn)(QUIC_URXE *e, void *arg,
+    const QUIC_CONN_ID *dcid);
 
 /*
  * Creates a new demuxer. The given BIO is used to receive datagrams from the
@@ -191,9 +163,9 @@ typedef void (ossl_quic_demux_cb_fn)(QUIC_URXE *e, void *arg);
  * NULL, ossl_time_zero() is used as the datagram reception time.
  */
 QUIC_DEMUX *ossl_quic_demux_new(BIO *net_bio,
-                                size_t short_conn_id_len,
-                                OSSL_TIME (*now)(void *arg),
-                                void *now_arg);
+    size_t short_conn_id_len,
+    OSSL_TIME (*now)(void *arg),
+    void *now_arg);
 
 /*
  * Destroy a demuxer. All URXEs must have been released back to the demuxer
@@ -213,50 +185,6 @@ void ossl_quic_demux_set_bio(QUIC_DEMUX *demux, BIO *net_bio);
 int ossl_quic_demux_set_mtu(QUIC_DEMUX *demux, unsigned int mtu);
 
 /*
- * Register a datagram handler callback for a connection ID.
- *
- * ossl_quic_demux_pump will call the specified function if it receives a datagram
- * the first packet of which has the specified destination connection ID.
- *
- * It is assumed all packets in a datagram have the same destination connection
- * ID (as QUIC mandates this), but it is the user's responsibility to check for
- * this and reject subsequent packets in a datagram that violate this rule.
- *
- * dst_conn_id is a destination connection ID; it is copied and need not remain
- * valid after this function returns.
- *
- * cb_arg is passed to cb when it is called. For information on the callback,
- * see its typedef above.
- *
- * Only one handler can be set for a given connection ID. If a handler is
- * already set for the given connection ID, returns 0.
- *
- * Returns 1 on success or 0 on failure.
- */
-int ossl_quic_demux_register(QUIC_DEMUX *demux,
-                             const QUIC_CONN_ID *dst_conn_id,
-                             ossl_quic_demux_cb_fn *cb,
-                             void *cb_arg);
-
-/*
- * Unregisters any datagram handler callback set for the given connection ID.
- * Fails if no handler is registered for the given connection ID.
- *
- * Returns 1 on success or 0 on failure.
- */
-int ossl_quic_demux_unregister(QUIC_DEMUX *demux,
-                               const QUIC_CONN_ID *dst_conn_id);
-
-/*
- * Unregisters any datagram handler callback from all connection IDs it is used
- * for. cb and cb_arg must both match the values passed to
- * ossl_quic_demux_register.
- */
-void ossl_quic_demux_unregister_by_cb(QUIC_DEMUX *demux,
-                                      ossl_quic_demux_cb_fn *cb,
-                                      void *cb_arg);
-
-/*
  * Set the default packet handler. This is used for incoming packets which don't
  * match a registered DCID. This is only needed for servers. If a default packet
  * handler is not set, a packet which doesn't match a registered DCID is
@@ -267,8 +195,8 @@ void ossl_quic_demux_unregister_by_cb(QUIC_DEMUX *demux,
  * the future, which may or may not be before the handler returns.
  */
 void ossl_quic_demux_set_default_handler(QUIC_DEMUX *demux,
-                                         ossl_quic_demux_cb_fn *cb,
-                                         void *cb_arg);
+    ossl_quic_demux_cb_fn *cb,
+    void *cb_arg);
 
 /*
  * Releases a URXE back to the demuxer. No reference must be made to the URXE or
@@ -276,7 +204,7 @@ void ossl_quic_demux_set_default_handler(QUIC_DEMUX *demux,
  * that is, its prev and next pointers must be NULL.
  */
 void ossl_quic_demux_release_urxe(QUIC_DEMUX *demux,
-                                  QUIC_URXE *e);
+    QUIC_URXE *e);
 
 /*
  * Reinjects a URXE which was issued to a registered DCID callback or the
@@ -290,7 +218,7 @@ void ossl_quic_demux_release_urxe(QUIC_DEMUX *demux,
  * immediately.
  */
 void ossl_quic_demux_reinject_urxe(QUIC_DEMUX *demux,
-                                   QUIC_URXE *e);
+    QUIC_URXE *e);
 
 /*
  * Process any unprocessed RX'd datagrams, by calling registered callbacks by
@@ -312,9 +240,9 @@ void ossl_quic_demux_reinject_urxe(QUIC_DEMUX *demux,
  *         similarly to in the case of a protocol violation.
  *
  */
-#define QUIC_DEMUX_PUMP_RES_OK              1
-#define QUIC_DEMUX_PUMP_RES_TRANSIENT_FAIL  (-1)
-#define QUIC_DEMUX_PUMP_RES_PERMANENT_FAIL  (-2)
+#define QUIC_DEMUX_PUMP_RES_OK 1
+#define QUIC_DEMUX_PUMP_RES_TRANSIENT_FAIL (-1)
+#define QUIC_DEMUX_PUMP_RES_PERMANENT_FAIL (-2)
 
 int ossl_quic_demux_pump(QUIC_DEMUX *demux);
 
@@ -328,11 +256,16 @@ int ossl_quic_demux_pump(QUIC_DEMUX *demux);
  * Returns 1 on success or 0 on failure.
  */
 int ossl_quic_demux_inject(QUIC_DEMUX *demux,
-                           const unsigned char *buf,
-                           size_t buf_len,
-                           const BIO_ADDR *peer,
-                           const BIO_ADDR *local);
+    const unsigned char *buf,
+    size_t buf_len,
+    const BIO_ADDR *peer,
+    const BIO_ADDR *local);
 
-# endif
+/*
+ * Returns 1 if there are any pending URXEs.
+ */
+int ossl_quic_demux_has_pending(const QUIC_DEMUX *demux);
+
+#endif
 
 #endif

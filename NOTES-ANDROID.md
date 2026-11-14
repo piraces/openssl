@@ -17,8 +17,8 @@ Notes for Android platforms
  Android is a cross-compiled target and you can't rely on `./Configure`
  to find out the configuration target for you.  You have to name your
  target explicitly; there are `android-arm`, `android-arm64`, `android-mips`,
- `android-mip64`, `android-x86` and `android-x86_64` (`*MIPS` targets are no
- longer supported with NDK R20+).
+ `android-mip64`, `android-x86`, `android-x86_64` and `android-riscv64`
+ (`*MIPS` targets are no longer supported with NDK R20+).
 
  Do not pass --cross-compile-prefix (as you might be tempted), as it
  will be "calculated" automatically based on chosen platform. However,
@@ -41,6 +41,12 @@ Notes for Android platforms
     PATH=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$ANDROID_NDK_ROOT/toolchains/arm-linux-androideabi-4.9/prebuilt/linux-x86_64/bin:$PATH
     ./Configure android-arm64 -D__ANDROID_API__=29
     make
+
+**Note**: 64-bit devices running Android 15 (API Level 35) and above may require
+native libraries with a 16 KB page size. OpenSSL libraries with a 16 KB
+page size are built by default on version 3.6.0 and above. For prior
+versions of OpenSSL, you can pass the argument `-Wl,-z,max-page-size=16384`
+to Configure while building OpenSSL for 64-bit devices.
 
  Older versions of the NDK have GCC under their common prebuilt tools
  directory, so the bin path will be slightly different. EG: to compile

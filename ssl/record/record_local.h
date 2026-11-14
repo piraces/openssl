@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -14,8 +14,9 @@
  *                                                                           *
  *****************************************************************************/
 
-#define MAX_WARN_ALERT_COUNT    5
+#if !defined(OSSL_SSL_RECORD_RECORD_LOCAL_H)
+#define OSSL_SSL_RECORD_RECORD_LOCAL_H
 
-/* Functions/macros provided by the RECORD_LAYER component */
+#define MAX_WARN_ALERT_COUNT 5
 
-#define DTLS_RECORD_LAYER_get_r_epoch(rl)       ((rl)->d->r_epoch)
+#endif /* !defined(OSSL_SSL_RECORD_RECORD_LOCAL_H) */

@@ -4,7 +4,8 @@
 
 BIO_s_dgram_pair, BIO_new_bio_dgram_pair, BIO_dgram_set_no_trunc,
 BIO_dgram_get_no_trunc, BIO_dgram_get_effective_caps, BIO_dgram_get_caps,
-BIO_dgram_set_caps, BIO_dgram_set_mtu, BIO_dgram_get_mtu - datagram pair BIO
+BIO_dgram_set_caps, BIO_dgram_set_mtu, BIO_dgram_get_mtu,
+BIO_dgram_set0_local_addr, BIO_dgram_pair_set0_pcap_file - datagram pair BIO
 
 =head1 SYNOPSIS
 
@@ -21,6 +22,8 @@ BIO_dgram_set_caps, BIO_dgram_set_mtu, BIO_dgram_get_mtu - datagram pair BIO
  int BIO_dgram_set_caps(BIO *bio, uint32_t caps);
  int BIO_dgram_set_mtu(BIO *bio, unsigned int mtu);
  unsigned int BIO_dgram_get_mtu(BIO *bio);
+ int BIO_dgram_set0_local_addr(BIO *bio, BIO_ADDR *addr);
+ int BIO_dgram_pair_set0_pcap_file(BIO *bio, char *filename);
 
 =head1 DESCRIPTION
 
@@ -53,7 +56,10 @@ The two BIOs must both use the method returned by BIO_s_dgram_pair() and neither
 of the BIOs may currently be associated in a pair.
 
 L<BIO_destroy_bio_pair(3)> destroys the association between two connected BIOs.
-Freeing either half of the pair will automatically destroy the association.
+Freeing either half of the pair will automatically destroy the association.  This
+destruction is implied if L<BIO_free(3)> is used to free one half of a BIO pair.
+Note that the other half of the BIO pair in such a situation may be joined to a
+new BIO, but only after calling L<BIO_destroy_bio_pair(3)> on itself.
 
 L<BIO_reset(3)> clears any data in the write buffer of the given BIO. This means
 that the opposite BIO in the pair will no longer have any data waiting to be
@@ -101,6 +107,19 @@ halves of the pair. The value does not affect the operation of the BIO datagram
 pair (except for BIO_get_write_guarantee(); see above) but may be used by other
 code to determine a requested MTU. When a BIO datagram pair BIO is created, the
 MTU is set to an unspecified but valid value.
+
+BIO_dgram_set0_local_addr() can be used to set the local BIO_ADDR to be used
+when sending a datagram via a BIO datagram pair. This becomes the peer address
+when receiving on the other half of the pair. If the BIO is used in a call to
+L<BIO_sendmmsg(3)> and a local address is explicitly specified, then the
+explicitly specified local address takes precedence. The reference to the
+BIO_ADDR is passed to the BIO by this call and will be freed automatically when
+the BIO is freed.
+
+BIO_dgram_pair_set0_pcap_file() creates a packet capture file with desired filename
+and writes all packets transmitted over BIO dgram pair. The file is truncated
+if it exists already. To enable the feature you must configure your OpenSSL
+library build with B<enable-dgram-pair-pcap> option.
 
 L<BIO_flush(3)> is a no-op.
 
@@ -206,13 +225,28 @@ capabilities are supported.
 BIO_dgram_get_mtu() returns the MTU value configured on the BIO, or zero if the
 operation is not supported.
 
+BIO_dgram_set0_local_addr() returns 1 on success and <= 0 otherwise.
+
+BIO_dgram_pair_set0_pcap_file() returns 1 on success and 0 otherwise.
+
 =head1 SEE ALSO
 
 L<BIO_s_bio(3)>, L<bio(7)>
 
+=head1 HISTORY
+
+BIO_s_dgram_pair(), BIO_new_bio_dgram_pair(),
+BIO_dgram_get_caps(), BIO_dgram_get_effective_caps(),
+BIO_dgram_get_no_trunc(), BIO_dgram_set_caps(),
+BIO_dgram_set_mtu(), BIO_dgram_set_no_trunc() were added in OpenSSL 3.2.
+
+BIO_dgram_set0_local_addr() was added in OpenSSL 3.5.
+
+BIO_dgram_pair_set0_pcap_file() was added in OpenSSL 4.2
+
 =head1 COPYRIGHT
 
-Copyright 2022 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2022-2025 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

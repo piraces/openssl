@@ -1,5 +1,5 @@
 /*
- * Copyright 2006-2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2006-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -18,7 +18,7 @@
 #include "cms_local.h"
 
 static EVP_PKEY *pkey_type2param(int ptype, const void *pval,
-                                 OSSL_LIB_CTX *libctx, const char *propq)
+    OSSL_LIB_CTX *libctx, const char *propq)
 {
     EVP_PKEY *pkey = NULL;
     EVP_PKEY_CTX *pctx = NULL;
@@ -31,7 +31,7 @@ static EVP_PKEY *pkey_type2param(int ptype, const void *pval,
         int selection = OSSL_KEYMGMT_SELECT_ALL_PARAMETERS;
 
         ctx = OSSL_DECODER_CTX_new_for_pkey(&pkey, "DER", NULL, "EC",
-                                            selection, libctx, propq);
+            selection, libctx, propq);
         if (ctx == NULL)
             goto err;
 
@@ -50,7 +50,7 @@ static EVP_PKEY *pkey_type2param(int ptype, const void *pval,
         if (pctx == NULL || EVP_PKEY_paramgen_init(pctx) <= 0)
             goto err;
         if (OBJ_obj2txt(groupname, sizeof(groupname), poid, 0) <= 0
-                || EVP_PKEY_CTX_set_group_name(pctx, groupname) <= 0) {
+            || EVP_PKEY_CTX_set_group_name(pctx, groupname) <= 0) {
             ERR_raise(ERR_LIB_CMS, CMS_R_DECODE_ERROR);
             goto err;
         }
@@ -63,7 +63,7 @@ static EVP_PKEY *pkey_type2param(int ptype, const void *pval,
     ERR_raise(ERR_LIB_CMS, CMS_R_DECODE_ERROR);
     return NULL;
 
- err:
+err:
     EVP_PKEY_free(pkey);
     EVP_PKEY_CTX_free(pctx);
     OSSL_DECODER_CTX_free(ctx);
@@ -71,7 +71,7 @@ static EVP_PKEY *pkey_type2param(int ptype, const void *pval,
 }
 
 static int ecdh_cms_set_peerkey(EVP_PKEY_CTX *pctx,
-                                X509_ALGOR *alg, ASN1_BIT_STRING *pubkey)
+    X509_ALGOR *alg, ASN1_BIT_STRING *pubkey)
 {
     const ASN1_OBJECT *aoid;
     int atype;
@@ -79,7 +79,7 @@ static int ecdh_cms_set_peerkey(EVP_PKEY_CTX *pctx,
     int rv = 0;
     EVP_PKEY *pkpeer = NULL;
     const unsigned char *p;
-    int plen;
+    size_t plen;
 
     X509_ALGOR_get0(&aoid, &atype, &aval, alg);
     if (OBJ_obj2nid(aoid) != NID_X9_62_id_ecPublicKey)
@@ -100,23 +100,25 @@ static int ecdh_cms_set_peerkey(EVP_PKEY_CTX *pctx,
             goto err;
     } else {
         pkpeer = pkey_type2param(atype, aval,
-                                 EVP_PKEY_CTX_get0_libctx(pctx),
-                                 EVP_PKEY_CTX_get0_propq(pctx));
+            EVP_PKEY_CTX_get0_libctx(pctx),
+            EVP_PKEY_CTX_get0_propq(pctx));
         if (pkpeer == NULL)
             goto err;
     }
     /* We have parameters now set public key */
-    plen = ASN1_STRING_length(pubkey);
+    plen = ASN1_STRING_get_length(pubkey);
+    if (plen > INT_MAX)
+        goto err;
     p = ASN1_STRING_get0_data(pubkey);
     if (p == NULL || plen == 0)
         goto err;
 
-    if (!EVP_PKEY_set1_encoded_public_key(pkpeer, p, plen))
+    if (EVP_PKEY_set1_encoded_public_key(pkpeer, p, (int)plen) <= 0)
         goto err;
 
     if (EVP_PKEY_derive_set_peer(pctx, pkpeer) > 0)
         rv = 1;
- err:
+err:
     EVP_PKEY_free(pkpeer);
     return rv;
 }
@@ -163,25 +165,34 @@ static int ecdh_cms_set_shared_info(EVP_PKEY_CTX *pctx, CMS_RecipientInfo *ri)
     ASN1_OCTET_STRING *ukm;
     const unsigned char *p;
     unsigned char *der = NULL;
-    int plen, keylen;
+    int keylen, plen_i;
+    size_t plen;
     EVP_CIPHER *kekcipher = NULL;
     EVP_CIPHER_CTX *kekctx;
+    const ASN1_OBJECT *aoid = NULL;
+    int ptype = 0;
+    const void *parameter = NULL;
+
     char name[OSSL_MAX_NAME_SIZE];
 
     if (!CMS_RecipientInfo_kari_get0_alg(ri, &alg, &ukm))
         return 0;
 
-    if (!ecdh_cms_set_kdf_param(pctx, OBJ_obj2nid(alg->algorithm))) {
+    X509_ALGOR_get0(&aoid, &ptype, &parameter, alg);
+
+    if (!ecdh_cms_set_kdf_param(pctx, OBJ_obj2nid(aoid))) {
         ERR_raise(ERR_LIB_CMS, CMS_R_KDF_PARAMETER_ERROR);
         return 0;
     }
 
-    if (alg->parameter->type != V_ASN1_SEQUENCE)
+    if (ptype != V_ASN1_SEQUENCE)
         return 0;
 
-    p = alg->parameter->value.sequence->data;
-    plen = alg->parameter->value.sequence->length;
-    kekalg = d2i_X509_ALGOR(NULL, &p, plen);
+    p = ASN1_STRING_get0_data(parameter);
+    plen = ASN1_STRING_get_length(parameter);
+    if (plen > INT_MAX)
+        goto err;
+    kekalg = d2i_X509_ALGOR(NULL, &p, (int)plen);
     if (kekalg == NULL)
         goto err;
     kekctx = CMS_RecipientInfo_kari_get0_ctx(ri);
@@ -200,17 +211,17 @@ static int ecdh_cms_set_shared_info(EVP_PKEY_CTX *pctx, CMS_RecipientInfo *ri)
     if (EVP_PKEY_CTX_set_ecdh_kdf_outlen(pctx, keylen) <= 0)
         goto err;
 
-    plen = CMS_SharedInfo_encode(&der, kekalg, ukm, keylen);
+    plen_i = CMS_SharedInfo_encode(&der, kekalg, ukm, keylen);
 
-    if (plen <= 0)
+    if (plen_i <= 0)
         goto err;
 
-    if (EVP_PKEY_CTX_set0_ecdh_kdf_ukm(pctx, der, plen) <= 0)
+    if (EVP_PKEY_CTX_set0_ecdh_kdf_ukm(pctx, der, plen_i) <= 0)
         goto err;
     der = NULL;
 
     rv = 1;
- err:
+err:
     EVP_CIPHER_free(kekcipher);
     X509_ALGOR_free(kekalg);
     OPENSSL_free(der);
@@ -230,7 +241,7 @@ static int ecdh_cms_decrypt(CMS_RecipientInfo *ri)
         ASN1_BIT_STRING *pubkey;
 
         if (!CMS_RecipientInfo_kari_get0_orig_id(ri, &alg, &pubkey,
-                                                 NULL, NULL, NULL))
+                NULL, NULL, NULL))
             return 0;
         if (alg == NULL || pubkey == NULL)
             return 0;
@@ -270,7 +281,7 @@ static int ecdh_cms_encrypt(CMS_RecipientInfo *ri)
     /* Get ephemeral key */
     pkey = EVP_PKEY_CTX_get0_pkey(pctx);
     if (!CMS_RecipientInfo_kari_get0_orig_id(ri, &talg, &pubkey,
-                                             NULL, NULL, NULL))
+            NULL, NULL, NULL))
         goto err;
     X509_ALGOR_get0(&aoid, NULL, NULL, talg);
     /* Is everything uninitialised? */
@@ -282,11 +293,11 @@ static int ecdh_cms_encrypt(CMS_RecipientInfo *ri)
         if (enckeylen > INT_MAX || enckeylen == 0)
             goto err;
         ASN1_STRING_set0(pubkey, penc, (int)enckeylen);
-        ossl_asn1_string_set_bits_left(pubkey, 0);
+        ossl_asn1_bit_string_set_unused_bits(pubkey, 0);
 
         penc = NULL;
         (void)X509_ALGOR_set0(talg, OBJ_nid2obj(NID_X9_62_id_ecPublicKey),
-                              V_ASN1_UNDEF, NULL); /* cannot fail */
+            V_ASN1_UNDEF, NULL); /* cannot fail */
     }
 
     /* See if custom parameters set */
@@ -373,7 +384,7 @@ static int ecdh_cms_encrypt(CMS_RecipientInfo *ri)
     if (!rv)
         ASN1_STRING_free(wrap_str);
 
- err:
+err:
     OPENSSL_free(penc);
     X509_ALGOR_free(wrap_alg);
     return rv;

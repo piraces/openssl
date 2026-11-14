@@ -1,5 +1,5 @@
 /*
- * Copyright 2008-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2008-2025 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -21,7 +21,7 @@ int main(int argc, char **argv)
     X509 *rcert = NULL;
     STACK_OF(X509) *recips = NULL;
     CMS_ContentInfo *cms = NULL;
-    int ret = 1;
+    int ret = EXIT_FAILURE;
 
     int flags = CMS_STREAM | CMS_DETACHED;
 
@@ -57,7 +57,7 @@ int main(int argc, char **argv)
 
     dout = BIO_new_file("smencr.out", "wb");
 
-    if (!in)
+    if (in == NULL || dout == NULL)
         goto err;
 
     /* encrypt content */
@@ -77,11 +77,9 @@ int main(int argc, char **argv)
     if (!PEM_write_bio_CMS(out, cms))
         goto err;
 
-    ret = 0;
-
- err:
-
-    if (ret) {
+    ret = EXIT_SUCCESS;
+err:
+    if (ret != EXIT_SUCCESS) {
         fprintf(stderr, "Error Encrypting Data\n");
         ERR_print_errors_fp(stderr);
     }

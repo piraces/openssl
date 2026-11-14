@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2022-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -43,15 +43,16 @@ struct quic_sstream_st {
      *
      * Invariant: No logical byte is ever in both new_set and acked_set.
      */
-    UINT_SET        new_set, acked_set;
+    UINT_SET new_set, acked_set;
 
     /*
      * The current size of the stream is ring_buf.head_offset. If
      * have_final_size is true, this is also the final size of the stream.
      */
-    unsigned int    have_final_size     : 1;
-    unsigned int    sent_final_size     : 1;
-    unsigned int    acked_final_size    : 1;
+    unsigned int have_final_size : 1;
+    unsigned int sent_final_size : 1;
+    unsigned int acked_final_size : 1;
+    unsigned int cleanse : 1;
 };
 
 static void qss_cull(QUIC_SSTREAM *qss);
@@ -65,8 +66,8 @@ QUIC_SSTREAM *ossl_quic_sstream_new(size_t init_buf_size)
         return NULL;
 
     ring_buf_init(&qss->ring_buf);
-    if (!ring_buf_resize(&qss->ring_buf, init_buf_size)) {
-        ring_buf_destroy(&qss->ring_buf);
+    if (!ring_buf_resize(&qss->ring_buf, init_buf_size, 0)) {
+        ring_buf_destroy(&qss->ring_buf, 0);
         OPENSSL_free(qss);
         return NULL;
     }
@@ -83,15 +84,15 @@ void ossl_quic_sstream_free(QUIC_SSTREAM *qss)
 
     ossl_uint_set_destroy(&qss->new_set);
     ossl_uint_set_destroy(&qss->acked_set);
-    ring_buf_destroy(&qss->ring_buf);
+    ring_buf_destroy(&qss->ring_buf, qss->cleanse);
     OPENSSL_free(qss);
 }
 
 int ossl_quic_sstream_get_stream_frame(QUIC_SSTREAM *qss,
-                                       size_t skip,
-                                       OSSL_QUIC_FRAME_STREAM *hdr,
-                                       OSSL_QTX_IOVEC *iov,
-                                       size_t *num_iov)
+    size_t skip,
+    OSSL_QUIC_FRAME_STREAM *hdr,
+    OSSL_QTX_IOVEC *iov,
+    size_t *num_iov)
 {
     size_t num_iov_ = 0, src_len = 0, total_len = 0, i;
     uint64_t max_len;
@@ -114,9 +115,9 @@ int ossl_quic_sstream_get_stream_frame(QUIC_SSTREAM *qss,
             return 0;
 
         hdr->offset = qss->ring_buf.head_offset;
-        hdr->len    = 0;
+        hdr->len = 0;
         hdr->is_fin = 1;
-        *num_iov    = 0;
+        *num_iov = 0;
         return 1;
     }
 
@@ -134,8 +135,8 @@ int ossl_quic_sstream_get_stream_frame(QUIC_SSTREAM *qss,
             break;
 
         if (!ring_buf_get_buf_at(&qss->ring_buf,
-                                 range->range.start + total_len,
-                                 &src, &src_len))
+                range->range.start + total_len,
+                &src, &src_len))
             return 0;
 
         if (src_len == 0)
@@ -146,19 +147,19 @@ int ossl_quic_sstream_get_stream_frame(QUIC_SSTREAM *qss,
         if (total_len + src_len > max_len)
             src_len = (size_t)(max_len - total_len);
 
-        iov[num_iov_].buf       = src;
-        iov[num_iov_].buf_len   = src_len;
+        iov[num_iov_].buf = src;
+        iov[num_iov_].buf_len = src_len;
 
         total_len += src_len;
         ++num_iov_;
     }
 
     hdr->offset = range->range.start;
-    hdr->len    = total_len;
+    hdr->len = total_len;
     hdr->is_fin = qss->have_final_size
         && hdr->offset + hdr->len == qss->ring_buf.head_offset;
 
-    *num_iov    = num_iov_;
+    *num_iov = num_iov_;
     return 1;
 }
 
@@ -177,13 +178,13 @@ uint64_t ossl_quic_sstream_get_cur_size(QUIC_SSTREAM *qss)
 }
 
 int ossl_quic_sstream_mark_transmitted(QUIC_SSTREAM *qss,
-                                       uint64_t start,
-                                       uint64_t end)
+    uint64_t start,
+    uint64_t end)
 {
     UINT_RANGE r;
 
     r.start = start;
-    r.end   = end;
+    r.end = end;
 
     if (!ossl_uint_set_remove(&qss->new_set, &r))
         return 0;
@@ -192,7 +193,7 @@ int ossl_quic_sstream_mark_transmitted(QUIC_SSTREAM *qss,
 }
 
 int ossl_quic_sstream_mark_transmitted_fin(QUIC_SSTREAM *qss,
-                                           uint64_t final_size)
+    uint64_t final_size)
 {
     /*
      * We do not really need final_size since we already know the size of the
@@ -206,12 +207,12 @@ int ossl_quic_sstream_mark_transmitted_fin(QUIC_SSTREAM *qss,
 }
 
 int ossl_quic_sstream_mark_lost(QUIC_SSTREAM *qss,
-                                uint64_t start,
-                                uint64_t end)
+    uint64_t start,
+    uint64_t end)
 {
     UINT_RANGE r;
     r.start = start;
-    r.end   = end;
+    r.end = end;
 
     /*
      * We lost a range of stream data bytes, so reinsert them into the new set,
@@ -235,12 +236,12 @@ int ossl_quic_sstream_mark_lost_fin(QUIC_SSTREAM *qss)
 }
 
 int ossl_quic_sstream_mark_acked(QUIC_SSTREAM *qss,
-                                 uint64_t start,
-                                 uint64_t end)
+    uint64_t start,
+    uint64_t end)
 {
     UINT_RANGE r;
     r.start = start;
-    r.end   = end;
+    r.end = end;
 
     if (!ossl_uint_set_insert(&qss->acked_set, &r))
         return 0;
@@ -279,9 +280,9 @@ int ossl_quic_sstream_get_final_size(QUIC_SSTREAM *qss, uint64_t *final_size)
 }
 
 int ossl_quic_sstream_append(QUIC_SSTREAM *qss,
-                             const unsigned char *buf,
-                             size_t buf_len,
-                             size_t *consumed)
+    const unsigned char *buf,
+    size_t buf_len,
+    size_t *consumed)
 {
     size_t l, consumed_ = 0;
     UINT_RANGE r;
@@ -308,14 +309,14 @@ int ossl_quic_sstream_append(QUIC_SSTREAM *qss,
         if (l == 0)
             break;
 
-        buf         += l;
-        buf_len     -= l;
-        consumed_   += l;
+        buf += l;
+        buf_len -= l;
+        consumed_ += l;
     }
 
     if (consumed_ > 0) {
         r.start = old_ring_buf.head_offset;
-        r.end   = r.start + consumed_ - 1;
+        r.end = r.start + consumed_ - 1;
         assert(r.end + 1 == qss->ring_buf.head_offset);
         if (!ossl_uint_set_insert(&qss->new_set, &r)) {
             qss->ring_buf = old_ring_buf;
@@ -349,12 +350,13 @@ static void qss_cull(QUIC_SSTREAM *qss)
      * can only cull contiguous areas at the start of the ring buffer anyway.
      */
     if (h != NULL)
-        ring_buf_cpop_range(&qss->ring_buf, h->range.start, h->range.end);
+        ring_buf_cpop_range(&qss->ring_buf, h->range.start, h->range.end,
+            qss->cleanse);
 }
 
 int ossl_quic_sstream_set_buffer_size(QUIC_SSTREAM *qss, size_t num_bytes)
 {
-    return ring_buf_resize(&qss->ring_buf, num_bytes);
+    return ring_buf_resize(&qss->ring_buf, num_bytes, qss->cleanse);
 }
 
 size_t ossl_quic_sstream_get_buffer_size(QUIC_SSTREAM *qss)
@@ -372,9 +374,35 @@ size_t ossl_quic_sstream_get_buffer_avail(QUIC_SSTREAM *qss)
     return ring_buf_avail(&qss->ring_buf);
 }
 
+int ossl_quic_sstream_is_totally_acked(QUIC_SSTREAM *qss)
+{
+    UINT_RANGE r;
+    uint64_t cur_size;
+
+    if (qss->have_final_size && !qss->acked_final_size)
+        return 0;
+
+    if (ossl_quic_sstream_get_cur_size(qss) == 0)
+        return 1;
+
+    if (ossl_list_uint_set_num(&qss->acked_set) != 1)
+        return 0;
+
+    r = ossl_list_uint_set_head(&qss->acked_set)->range;
+    cur_size = qss->ring_buf.head_offset;
+
+    /*
+     * The invariants of UINT_SET guarantee a single list element if we have a
+     * single contiguous range, which is what we should have if everything has
+     * been acked.
+     */
+    assert(r.end + 1 <= cur_size);
+    return r.start == 0 && r.end + 1 == cur_size;
+}
+
 void ossl_quic_sstream_adjust_iov(size_t len,
-                                  OSSL_QTX_IOVEC *iov,
-                                  size_t num_iov)
+    OSSL_QTX_IOVEC *iov,
+    size_t num_iov)
 {
     size_t running = 0, i, iovlen;
 
@@ -388,4 +416,9 @@ void ossl_quic_sstream_adjust_iov(size_t len,
 
         running += iovlen;
     }
+}
+
+void ossl_quic_sstream_set_cleanse(QUIC_SSTREAM *qss, int cleanse)
+{
+    qss->cleanse = cleanse;
 }

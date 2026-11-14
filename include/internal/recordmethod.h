@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2022-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -8,10 +8,10 @@
  */
 
 #ifndef OSSL_INTERNAL_RECORDMETHOD_H
-# define OSSL_INTERNAL_RECORDMETHOD_H
-# pragma once
+#define OSSL_INTERNAL_RECORDMETHOD_H
+#pragma once
 
-# include <openssl/ssl.h>
+#include <openssl/ssl.h>
 
 /*
  * We use the term "record" here to refer to a packet of data. Records are
@@ -24,7 +24,7 @@
  */
 
 /*
- * An OSSL_RECORD_METHOD is a protcol specific method which provides the
+ * An OSSL_RECORD_METHOD is a protocol specific method which provides the
  * functions for reading and writing records for that protocol. Which
  * OSSL_RECORD_METHOD to use for a given protocol is defined by the SSL_METHOD.
  */
@@ -36,26 +36,17 @@ typedef struct ossl_record_method_st OSSL_RECORD_METHOD;
  */
 typedef struct ossl_record_layer_st OSSL_RECORD_LAYER;
 
+#define OSSL_RECORD_ROLE_CLIENT 0
+#define OSSL_RECORD_ROLE_SERVER 1
 
-# define OSSL_RECORD_ROLE_CLIENT 0
-# define OSSL_RECORD_ROLE_SERVER 1
+#define OSSL_RECORD_DIRECTION_READ 0
+#define OSSL_RECORD_DIRECTION_WRITE 1
 
-# define OSSL_RECORD_DIRECTION_READ  0
-# define OSSL_RECORD_DIRECTION_WRITE 1
-
-/*
- * Protection level. For <= TLSv1.2 only "NONE" and "APPLICATION" are used.
- */
-# define OSSL_RECORD_PROTECTION_LEVEL_NONE        0
-# define OSSL_RECORD_PROTECTION_LEVEL_EARLY       1
-# define OSSL_RECORD_PROTECTION_LEVEL_HANDSHAKE   2
-# define OSSL_RECORD_PROTECTION_LEVEL_APPLICATION 3
-
-# define OSSL_RECORD_RETURN_SUCCESS           1
-# define OSSL_RECORD_RETURN_RETRY             0
-# define OSSL_RECORD_RETURN_NON_FATAL_ERR    -1
-# define OSSL_RECORD_RETURN_FATAL            -2
-# define OSSL_RECORD_RETURN_EOF              -3
+#define OSSL_RECORD_RETURN_SUCCESS 1
+#define OSSL_RECORD_RETURN_RETRY 0
+#define OSSL_RECORD_RETURN_NON_FATAL_ERR -1
+#define OSSL_RECORD_RETURN_FATAL -2
+#define OSSL_RECORD_RETURN_EOF -3
 
 /*
  * Template for creating a record. A record consists of the |type| of data it
@@ -63,8 +54,10 @@ typedef struct ossl_record_layer_st OSSL_RECORD_LAYER;
  * buffer of payload data in |buf| of length |buflen|.
  */
 struct ossl_record_template_st {
-    int type;
+    unsigned char type;
     unsigned int version;
+    uint64_t sequence_number;
+    uint64_t epoch;
     const unsigned char *buf;
     size_t buflen;
 };
@@ -120,35 +113,36 @@ struct ossl_record_method_st {
      * now though, this works.
      */
     int (*new_record_layer)(OSSL_LIB_CTX *libctx,
-                            const char *propq, int vers,
-                            int role, int direction,
-                            int level,
-                            uint16_t epoch,
-                            unsigned char *secret,
-                            size_t secretlen,
-                            unsigned char *key,
-                            size_t keylen,
-                            unsigned char *iv,
-                            size_t ivlen,
-                            unsigned char *mackey,
-                            size_t mackeylen,
-                            const EVP_CIPHER *ciph,
-                            size_t taglen,
-                            int mactype,
-                            const EVP_MD *md,
-                            COMP_METHOD *comp,
-                            const EVP_MD *kdfdigest,
-                            BIO *prev,
-                            BIO *transport,
-                            BIO *next,
-                            BIO_ADDR *local,
-                            BIO_ADDR *peer,
-                            const OSSL_PARAM *settings,
-                            const OSSL_PARAM *options,
-                            const OSSL_DISPATCH *fns,
-                            void *cbarg,
-                            void *rlarg,
-                            OSSL_RECORD_LAYER **ret);
+        const char *propq, int vers,
+        int role, int direction,
+        int level,
+        uint64_t epoch,
+        unsigned char *secret,
+        size_t secretlen,
+        unsigned char *snkey,
+        unsigned char *key,
+        size_t keylen,
+        unsigned char *iv,
+        size_t ivlen,
+        unsigned char *mackey,
+        size_t mackeylen,
+        const EVP_CIPHER *snciph,
+        const EVP_CIPHER *ciph,
+        size_t taglen,
+        int mactype,
+        const EVP_MD *md,
+        COMP_METHOD *comp,
+        const EVP_MD *kdfdigest,
+        BIO *prev,
+        BIO *transport,
+        BIO *next,
+        int use_urxe,
+        const OSSL_PARAM *settings,
+        const OSSL_PARAM *options,
+        const OSSL_DISPATCH *fns,
+        void *cbarg,
+        void *rlarg,
+        OSSL_RECORD_LAYER **ret);
     int (*free)(OSSL_RECORD_LAYER *rl);
 
     /* Returns 1 if we have unprocessed data buffered or 0 otherwise */
@@ -161,7 +155,7 @@ struct ossl_record_method_st {
     int (*processed_read_pending)(OSSL_RECORD_LAYER *rl);
 
     /*
-     * The amount of processed app data that is internally bufferred and
+     * The amount of processed app data that is internally buffered and
      * available to read
      */
     size_t (*app_data_pending)(OSSL_RECORD_LAYER *rl);
@@ -179,8 +173,8 @@ struct ossl_record_method_st {
      * exit the record layer may update this to an alternative fragment size to
      * be used. This must always be less than or equal to |maxfrag|.
      */
-    size_t (*get_max_records)(OSSL_RECORD_LAYER *rl, int type, size_t len,
-                              size_t maxfrag, size_t *preffrag);
+    size_t (*get_max_records)(OSSL_RECORD_LAYER *rl, uint8_t type, size_t len,
+        size_t maxfrag, size_t *preffrag);
 
     /*
      * Write |numtempl| records from the array of record templates pointed to
@@ -203,7 +197,7 @@ struct ossl_record_method_st {
      * -1 on failure
      */
     int (*write_records)(OSSL_RECORD_LAYER *rl, OSSL_RECORD_TEMPLATE *templates,
-                         size_t numtempl);
+        size_t numtempl);
 
     /*
      * Retry a previous call to write_records. The caller should continue to
@@ -225,20 +219,22 @@ struct ossl_record_method_st {
      * filled in with the epoch and sequence number from the record.
      * An opaque record layer handle for the record is returned in |*rechandle|
      * which is used in a subsequent call to |release_record|. The buffer must
-     * remain available until release_record is called.
+     * remain available until all the bytes from record are released via one or
+     * more release_record calls.
      *
-     * Internally the the OSSL_RECORD_METHOD the implementation may read/process
+     * Internally the OSSL_RECORD_METHOD implementation may read/process
      * multiple records in one go and buffer them.
      */
     int (*read_record)(OSSL_RECORD_LAYER *rl, void **rechandle, int *rversion,
-                      int *type, unsigned char **data, size_t *datalen,
-                      uint16_t *epoch, unsigned char *seq_num);
+        uint8_t *type, const unsigned char **data, size_t *datalen,
+        uint64_t *epoch, uint64_t *seq_num);
     /*
-     * Release a buffer associated with a record previously read with
-     * read_record. Records are guaranteed to be released in the order that they
-     * are read.
+     * Release length bytes from a buffer associated with a record previously
+     * read with read_record. Once all the bytes from a record are released, the
+     * whole record and its associated buffer is released. Records are
+     * guaranteed to be released in the order that they are read.
      */
-    int (*release_record)(OSSL_RECORD_LAYER *rl, void *rechandle);
+    int (*release_record)(OSSL_RECORD_LAYER *rl, void *rechandle, size_t length);
 
     /*
      * In the event that a fatal error is returned from the functions above then
@@ -252,6 +248,21 @@ struct ossl_record_method_st {
      * new_record_layer call
      */
     int (*set1_bio)(OSSL_RECORD_LAYER *rl, BIO *bio);
+
+    /*
+     * Update the peer address for DTLS write record layers. When set
+     * (family != AF_UNSPEC), the record layer will use BIO_sendmmsg()
+     * with this address instead of BIO_write(). This is used by
+     * listener-created connections that share the listener's network BIO.
+     */
+    int (*set1_peer)(OSSL_RECORD_LAYER *rl, const BIO_ADDR *peer);
+
+    /*
+     * Set whether to use the URXE queue for reading. This is used by
+     * listener-created DTLS connections that receive data via the
+     * listener's demux rather than directly from a BIO.
+     */
+    void (*set_use_urxe)(OSSL_RECORD_LAYER *rl, int use_urxe);
 
     /* Called when protocol negotiation selects a protocol version to use */
     int (*set_protocol_version)(OSSL_RECORD_LAYER *rl, int version);
@@ -285,7 +296,7 @@ struct ossl_record_method_st {
      * Get a short or long human readable description of the record layer state
      */
     void (*get_state)(OSSL_RECORD_LAYER *rl, const char **shortstr,
-                      const char **longstr);
+        const char **longstr);
 
     /*
      * Set new options or modify ones that were originally specified in the
@@ -314,6 +325,31 @@ struct ossl_record_method_st {
     int (*increment_sequence_ctr)(OSSL_RECORD_LAYER *rl);
 
     /*
+     * Get the Sequence number
+     */
+    int (*get_sequence)(OSSL_RECORD_LAYER *rl, uint64_t *sequence);
+
+    /*
+     * Set the Sequence number to a specific value
+     */
+    int (*set_sequence)(OSSL_RECORD_LAYER *rl, uint64_t sequence);
+
+    /*
+     * Get the Epoch value
+     */
+    int (*get_epoch)(OSSL_RECORD_LAYER *rl, uint64_t *epoch);
+
+    /*
+     * Set the current MTU length to be used for the record layer.
+     */
+    int (*set_curr_mtu)(OSSL_RECORD_LAYER *rl, size_t curr_mtu);
+
+    /*
+     * Return number of records in the queue of unprocessed records
+     */
+    size_t (*unprocessed_records)(OSSL_RECORD_LAYER *rl);
+
+    /*
      * Allocate read or write buffers. Does nothing if already allocated.
      * Assumes default buffer length and 1 pipeline.
      */
@@ -324,14 +360,21 @@ struct ossl_record_method_st {
      * data. Buffers are automatically reallocated on next read/write.
      */
     int (*free_buffers)(OSSL_RECORD_LAYER *rl);
-};
 
+    /*
+     * DTLS only. Instead of freeing previous record layer hand it over
+     * so that a retransmission arriving for the previous epoch can still
+     * be processed correctly. The current record layer takes ownership
+     * of the previous record layer.
+     */
+    int (*set_prev_epoch_rl)(OSSL_RECORD_LAYER *rl, OSSL_RECORD_LAYER *prev);
+};
 
 /* Standard built-in record methods */
 extern const OSSL_RECORD_METHOD ossl_tls_record_method;
-# ifndef OPENSSL_NO_KTLS
+#ifndef OPENSSL_NO_KTLS
 extern const OSSL_RECORD_METHOD ossl_ktls_record_method;
-# endif
+#endif
 extern const OSSL_RECORD_METHOD ossl_dtls_record_method;
 
 #endif /* !defined(OSSL_INTERNAL_RECORDMETHOD_H) */

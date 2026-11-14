@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1999-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -11,18 +11,17 @@
 
 #include <stdio.h>
 #include "internal/cryptlib.h"
+#include "crypto/x509.h"
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include "pk7_local.h"
 
 #define BUFFERSIZE 4096
 
-
 static int pkcs7_copy_existing_digest(PKCS7 *p7, PKCS7_SIGNER_INFO *si);
 
-PKCS7 *PKCS7_sign_ex(X509 *signcert, EVP_PKEY *pkey, STACK_OF(X509) *certs,
-                     BIO *data, int flags, OSSL_LIB_CTX *libctx,
-                     const char *propq)
+PKCS7 *PKCS7_sign_ex(X509 *signcert, EVP_PKEY *pkey, const STACK_OF(X509) *certs,
+    BIO *data, int flags, OSSL_LIB_CTX *libctx, const char *propq)
 {
     PKCS7 *p7;
     int i;
@@ -59,17 +58,16 @@ PKCS7 *PKCS7_sign_ex(X509 *signcert, EVP_PKEY *pkey, STACK_OF(X509) *certs,
     if (PKCS7_final(p7, data, flags))
         return p7;
 
- err:
+err:
     PKCS7_free(p7);
     return NULL;
 }
 
-PKCS7 *PKCS7_sign(X509 *signcert, EVP_PKEY *pkey, STACK_OF(X509) *certs,
-                  BIO *data, int flags)
+PKCS7 *PKCS7_sign(X509 *signcert, EVP_PKEY *pkey, const STACK_OF(X509) *certs,
+    BIO *data, int flags)
 {
     return PKCS7_sign_ex(signcert, pkey, certs, data, flags, NULL, NULL);
 }
-
 
 int PKCS7_final(PKCS7 *p7, BIO *data, int flags)
 {
@@ -95,35 +93,52 @@ err:
     BIO_free_all(p7bio);
 
     return ret;
-
 }
 
 /* Check to see if a cipher exists and if so add S/MIME capabilities */
 
-static int add_cipher_smcap(STACK_OF(X509_ALGOR) *sk, int nid, int arg)
+static int add_cipher_smcap(STACK_OF(X509_ALGOR) *sk, int nid, int arg,
+    OSSL_LIB_CTX *libctx, const char *propq)
 {
-    if (EVP_get_cipherbynid(nid))
+    EVP_CIPHER *cipher;
+
+    ERR_set_mark();
+    cipher = EVP_CIPHER_fetch(libctx, OBJ_nid2sn(nid), propq);
+    ERR_pop_to_mark();
+    if (cipher != NULL) {
+        EVP_CIPHER_free(cipher);
         return PKCS7_simple_smimecap(sk, nid, arg);
+    }
     return 1;
 }
 
-static int add_digest_smcap(STACK_OF(X509_ALGOR) *sk, int nid, int arg)
+static int add_digest_smcap(STACK_OF(X509_ALGOR) *sk, int nid, int arg,
+    OSSL_LIB_CTX *libctx, const char *propq)
 {
-    if (EVP_get_digestbynid(nid))
+    EVP_MD *md;
+
+    ERR_set_mark();
+    md = EVP_MD_fetch(libctx, OBJ_nid2sn(nid), propq);
+    ERR_pop_to_mark();
+    if (md != NULL) {
+        EVP_MD_free(md);
         return PKCS7_simple_smimecap(sk, nid, arg);
+    }
     return 1;
 }
 
 PKCS7_SIGNER_INFO *PKCS7_sign_add_signer(PKCS7 *p7, X509 *signcert,
-                                         EVP_PKEY *pkey, const EVP_MD *md,
-                                         int flags)
+    EVP_PKEY *pkey, const EVP_MD *md,
+    int flags)
 {
     PKCS7_SIGNER_INFO *si = NULL;
     STACK_OF(X509_ALGOR) *smcap = NULL;
+    OSSL_LIB_CTX *libctx;
+    const char *propq;
 
     if (!X509_check_private_key(signcert, pkey)) {
         ERR_raise(ERR_LIB_PKCS7,
-                  PKCS7_R_PRIVATE_KEY_DOES_NOT_MATCH_CERTIFICATE);
+            PKCS7_R_PRIVATE_KEY_DOES_NOT_MATCH_CERTIFICATE);
         return NULL;
     }
 
@@ -147,18 +162,17 @@ PKCS7_SIGNER_INFO *PKCS7_sign_add_signer(PKCS7 *p7, X509 *signcert,
                 ERR_raise(ERR_LIB_PKCS7, ERR_R_CRYPTO_LIB);
                 goto err;
             }
-            if (!add_cipher_smcap(smcap, NID_aes_256_cbc, -1)
-                || !add_digest_smcap(smcap, NID_id_GostR3411_2012_256, -1)
-                || !add_digest_smcap(smcap, NID_id_GostR3411_2012_512, -1)
-                || !add_digest_smcap(smcap, NID_id_GostR3411_94, -1)
-                || !add_cipher_smcap(smcap, NID_id_Gost28147_89, -1)
-                || !add_cipher_smcap(smcap, NID_aes_192_cbc, -1)
-                || !add_cipher_smcap(smcap, NID_aes_128_cbc, -1)
-                || !add_cipher_smcap(smcap, NID_des_ede3_cbc, -1)
-                || !add_cipher_smcap(smcap, NID_rc2_cbc, 128)
-                || !add_cipher_smcap(smcap, NID_rc2_cbc, 64)
-                || !add_cipher_smcap(smcap, NID_des_cbc, -1)
-                || !add_cipher_smcap(smcap, NID_rc2_cbc, 40)
+            libctx = ossl_pkcs7_ctx_get0_libctx(si->ctx);
+            propq = ossl_pkcs7_ctx_get0_propq(si->ctx);
+            if (!add_cipher_smcap(smcap, NID_aes_256_cbc, -1, libctx, propq)
+                || !add_digest_smcap(smcap, NID_id_GostR3411_2012_256, -1, libctx, propq)
+                || !add_digest_smcap(smcap, NID_id_GostR3411_2012_512, -1, libctx, propq)
+                || !add_digest_smcap(smcap, NID_id_GostR3411_94, -1, libctx, propq)
+                || !add_cipher_smcap(smcap, NID_id_Gost28147_89, -1, libctx, propq)
+                || !add_cipher_smcap(smcap, NID_aes_192_cbc, -1, libctx, propq)
+                || !add_cipher_smcap(smcap, NID_aes_128_cbc, -1, libctx, propq)
+                || !add_cipher_smcap(smcap, NID_des_ede3_cbc, -1, libctx, propq)
+                || !add_cipher_smcap(smcap, NID_rc2_cbc, 128, libctx, propq)
                 || !PKCS7_add_attrib_smimecap(si, smcap))
                 goto err;
             sk_X509_ALGOR_pop_free(smcap, X509_ALGOR_free);
@@ -173,7 +187,7 @@ PKCS7_SIGNER_INFO *PKCS7_sign_add_signer(PKCS7 *p7, X509 *signcert,
         }
     }
     return si;
- err:
+err:
     sk_X509_ALGOR_pop_free(smcap, X509_ALGOR_free);
     return NULL;
 }
@@ -188,7 +202,7 @@ static int pkcs7_copy_existing_digest(PKCS7 *p7, PKCS7_SIGNER_INFO *si)
     int i;
     STACK_OF(PKCS7_SIGNER_INFO) *sinfos;
     PKCS7_SIGNER_INFO *sitmp;
-    ASN1_OCTET_STRING *osdig = NULL;
+    const ASN1_OCTET_STRING *osdig = NULL;
     sinfos = PKCS7_get_signer_info(p7);
     for (i = 0; i < sk_PKCS7_SIGNER_INFO_num(sinfos); i++) {
         sitmp = sk_PKCS7_SIGNER_INFO_value(sinfos, i);
@@ -200,21 +214,28 @@ static int pkcs7_copy_existing_digest(PKCS7 *p7, PKCS7_SIGNER_INFO *si)
             osdig = PKCS7_digest_from_attributes(sitmp->auth_attr);
             break;
         }
-
     }
 
-    if (osdig != NULL)
-        return PKCS7_add1_attrib_digest(si, osdig->data, osdig->length);
+    if (osdig != NULL) {
+        size_t len;
+        len = ASN1_STRING_get_length(osdig);
+        if (len > INT_MAX)
+            goto err;
+        return PKCS7_add1_attrib_digest(si, ASN1_STRING_get0_data(osdig), (int)len);
+    }
 
+err:
     ERR_raise(ERR_LIB_PKCS7, PKCS7_R_NO_MATCHING_DIGEST_TYPE_FOUND);
     return 0;
 }
 
 /* This strongly overlaps with CMS_verify(), partly with PKCS7_dataVerify() */
-int PKCS7_verify(PKCS7 *p7, STACK_OF(X509) *certs, X509_STORE *store,
-                 BIO *indata, BIO *out, int flags)
+int PKCS7_verify(PKCS7 *p7, const STACK_OF(X509) *certs, X509_STORE *store,
+    BIO *indata, BIO *out, int flags)
 {
     STACK_OF(X509) *signers;
+    STACK_OF(X509) *included_certs;
+    STACK_OF(X509) *untrusted = NULL;
     X509 *signer;
     STACK_OF(PKCS7_SIGNER_INFO) *sinfos;
     PKCS7_SIGNER_INFO *si;
@@ -223,6 +244,7 @@ int PKCS7_verify(PKCS7 *p7, STACK_OF(X509) *certs, X509_STORE *store,
     int i, j = 0, k, ret = 0;
     BIO *p7bio = NULL;
     BIO *tmpout = NULL;
+    BIO *next = NULL;
     const PKCS7_CTX *p7_ctx;
 
     if (p7 == NULL) {
@@ -269,37 +291,40 @@ int PKCS7_verify(PKCS7 *p7, STACK_OF(X509) *certs, X509_STORE *store,
     /* Now verify the certificates */
     p7_ctx = ossl_pkcs7_get0_ctx(p7);
     cert_ctx = X509_STORE_CTX_new_ex(ossl_pkcs7_ctx_get0_libctx(p7_ctx),
-                                     ossl_pkcs7_ctx_get0_propq(p7_ctx));
+        ossl_pkcs7_ctx_get0_propq(p7_ctx));
     if (cert_ctx == NULL)
         goto err;
-    if (!(flags & PKCS7_NOVERIFY))
+    if ((flags & PKCS7_NOVERIFY) == 0) {
+        if (!ossl_x509_add_certs_new(&untrusted, certs, X509_ADD_FLAG_NO_DUP))
+            goto err;
+        included_certs = pkcs7_get0_certificates(p7);
+        if ((flags & PKCS7_NOCHAIN) == 0
+            && !ossl_x509_add_certs_new(&untrusted, included_certs,
+                X509_ADD_FLAG_NO_DUP))
+            goto err;
+
         for (k = 0; k < sk_X509_num(signers); k++) {
             signer = sk_X509_value(signers, k);
-            if (!(flags & PKCS7_NOCHAIN)) {
-                if (!X509_STORE_CTX_init(cert_ctx, store, signer,
-                                         p7->d.sign->cert)) {
-                    ERR_raise(ERR_LIB_PKCS7, ERR_R_X509_LIB);
-                    goto err;
-                }
-                if (!X509_STORE_CTX_set_default(cert_ctx, "smime_sign"))
-                    goto err;
-            } else if (!X509_STORE_CTX_init(cert_ctx, store, signer, NULL)) {
+            if (!X509_STORE_CTX_init(cert_ctx, store, signer, untrusted)) {
                 ERR_raise(ERR_LIB_PKCS7, ERR_R_X509_LIB);
                 goto err;
             }
+            if ((flags & PKCS7_NOCHAIN) == 0
+                && !X509_STORE_CTX_set_default(cert_ctx, "smime_sign"))
+                goto err;
             if (!(flags & PKCS7_NOCRL))
                 X509_STORE_CTX_set0_crls(cert_ctx, p7->d.sign->crl);
             i = X509_verify_cert(cert_ctx);
-            if (i <= 0)
-                j = X509_STORE_CTX_get_error(cert_ctx);
             if (i <= 0) {
+                j = X509_STORE_CTX_get_error(cert_ctx);
                 ERR_raise_data(ERR_LIB_PKCS7, PKCS7_R_CERTIFICATE_VERIFY_ERROR,
-                               "Verify error: %s",
-                               X509_verify_cert_error_string(j));
+                    "Verify error: %s",
+                    X509_verify_cert_error_string(j));
                 goto err;
             }
             /* Check for revocation status here */
         }
+    }
 
     if ((p7bio = PKCS7_dataInit(p7, indata)) == NULL)
         goto err;
@@ -327,10 +352,8 @@ int PKCS7_verify(PKCS7 *p7, STACK_OF(X509) *certs, X509_STORE *store,
     if (flags & PKCS7_TEXT) {
         if (!SMIME_text(tmpout, out)) {
             ERR_raise(ERR_LIB_PKCS7, PKCS7_R_SMIME_TEXT_ERROR);
-            BIO_free(tmpout);
             goto err;
         }
-        BIO_free(tmpout);
     }
 
     /* Now Verify All Signatures */
@@ -347,20 +370,24 @@ int PKCS7_verify(PKCS7 *p7, STACK_OF(X509) *certs, X509_STORE *store,
 
     ret = 1;
 
- err:
+err:
+    if (flags & PKCS7_TEXT)
+        BIO_free(tmpout);
     X509_STORE_CTX_free(cert_ctx);
     OPENSSL_free(buf);
-    if (indata != NULL)
-        BIO_pop(p7bio);
-    BIO_free_all(p7bio);
+    while (p7bio != NULL && p7bio != indata) {
+        next = BIO_pop(p7bio);
+        BIO_free(p7bio);
+        p7bio = next;
+    }
     sk_X509_free(signers);
+    sk_X509_free(untrusted);
     return ret;
 }
 
-STACK_OF(X509) *PKCS7_get0_signers(PKCS7 *p7, STACK_OF(X509) *certs,
-                                   int flags)
+STACK_OF(X509) *PKCS7_get0_signers(PKCS7 *p7, const STACK_OF(X509) *certs, int flags)
 {
-    STACK_OF(X509) *signers;
+    STACK_OF(X509) *signers, *included_certs;
     STACK_OF(PKCS7_SIGNER_INFO) *sinfos;
     PKCS7_SIGNER_INFO *si;
     PKCS7_ISSUER_AND_SERIAL *ias;
@@ -376,6 +403,7 @@ STACK_OF(X509) *PKCS7_get0_signers(PKCS7 *p7, STACK_OF(X509) *certs,
         ERR_raise(ERR_LIB_PKCS7, PKCS7_R_WRONG_CONTENT_TYPE);
         return NULL;
     }
+    included_certs = pkcs7_get0_certificates(p7);
 
     /* Collect all the signers together */
 
@@ -396,14 +424,11 @@ STACK_OF(X509) *PKCS7_get0_signers(PKCS7 *p7, STACK_OF(X509) *certs,
         ias = si->issuer_and_serial;
         signer = NULL;
         /* If any certificates passed they take priority */
-        if (certs != NULL)
-            signer = X509_find_by_issuer_and_serial(certs,
-                                                    ias->issuer, ias->serial);
-        if (signer == NULL && !(flags & PKCS7_NOINTERN)
-            && p7->d.sign->cert)
-            signer =
-                X509_find_by_issuer_and_serial(p7->d.sign->cert,
-                                               ias->issuer, ias->serial);
+        signer = X509_find_by_issuer_and_serial(certs,
+            ias->issuer, ias->serial);
+        if (signer == NULL && (flags & PKCS7_NOINTERN) == 0)
+            signer = X509_find_by_issuer_and_serial(included_certs,
+                ias->issuer, ias->serial);
         if (signer == NULL) {
             ERR_raise(ERR_LIB_PKCS7, PKCS7_R_SIGNER_CERTIFICATE_NOT_FOUND);
             sk_X509_free(signers);
@@ -420,9 +445,9 @@ STACK_OF(X509) *PKCS7_get0_signers(PKCS7 *p7, STACK_OF(X509) *certs,
 
 /* Build a complete PKCS#7 enveloped data */
 
-PKCS7 *PKCS7_encrypt_ex(STACK_OF(X509) *certs, BIO *in,
-                        const EVP_CIPHER *cipher, int flags,
-                        OSSL_LIB_CTX *libctx, const char *propq)
+PKCS7 *PKCS7_encrypt_ex(const STACK_OF(X509) *certs, BIO *in,
+    const EVP_CIPHER *cipher, int flags,
+    OSSL_LIB_CTX *libctx, const char *propq)
 {
     PKCS7 *p7;
     BIO *p7bio = NULL;
@@ -455,20 +480,17 @@ PKCS7 *PKCS7_encrypt_ex(STACK_OF(X509) *certs, BIO *in,
     if (PKCS7_final(p7, in, flags))
         return p7;
 
- err:
+err:
 
     BIO_free_all(p7bio);
     PKCS7_free(p7);
     return NULL;
-
 }
 
-PKCS7 *PKCS7_encrypt(STACK_OF(X509) *certs, BIO *in, const EVP_CIPHER *cipher,
-                     int flags)
+PKCS7 *PKCS7_encrypt(const STACK_OF(X509) *certs, BIO *in, const EVP_CIPHER *cipher, int flags)
 {
     return PKCS7_encrypt_ex(certs, in, cipher, flags, NULL, NULL);
 }
-
 
 int PKCS7_decrypt(PKCS7 *p7, EVP_PKEY *pkey, X509 *cert, BIO *data, int flags)
 {
@@ -489,7 +511,7 @@ int PKCS7_decrypt(PKCS7 *p7, EVP_PKEY *pkey, X509 *cert, BIO *data, int flags)
 
     if (cert && !X509_check_private_key(cert, pkey)) {
         ERR_raise(ERR_LIB_PKCS7,
-                  PKCS7_R_PRIVATE_KEY_DOES_NOT_MATCH_CERTIFICATE);
+            PKCS7_R_PRIVATE_KEY_DOES_NOT_MATCH_CERTIFICATE);
         return 0;
     }
 

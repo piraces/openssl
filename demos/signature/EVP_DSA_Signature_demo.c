@@ -1,5 +1,5 @@
 /*-
- * Copyright 2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2022-2026 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -25,28 +25,24 @@
  * the soliloquy from Hamlet scene 1 act 3
  */
 
-static const char *hamlet_1 =
-    "To be, or not to be, that is the question,\n"
-    "Whether tis nobler in the minde to suffer\n"
-    "The slings and arrowes of outragious fortune,\n"
-    "Or to take Armes again in a sea of troubles,\n"
-;
-static const char *hamlet_2 =
-    "And by opposing, end them, to die to sleep;\n"
-    "No more, and by a sleep, to say we end\n"
-    "The heart-ache, and the thousand natural shocks\n"
-    "That flesh is heir to? tis a consumation\n"
-;
+static const char *hamlet_1 = "To be, or not to be, that is the question,\n"
+                              "Whether tis nobler in the minde to suffer\n"
+                              "The slings and arrowes of outragious fortune,\n"
+                              "Or to take Armes again in a sea of troubles,\n";
+static const char *hamlet_2 = "And by opposing, end them, to die to sleep;\n"
+                              "No more, and by a sleep, to say we end\n"
+                              "The heart-ache, and the thousand natural shocks\n"
+                              "That flesh is heir to? tis a consumation\n";
 
 static const char ALG[] = "DSA";
 static const char DIGEST[] = "SHA256";
 static const int NUMBITS = 2048;
-static const char * const PROPQUERY = NULL;
+static const char *const PROPQUERY = NULL;
 
 static int generate_dsa_params(OSSL_LIB_CTX *libctx,
-                               EVP_PKEY **p_params)
+    EVP_PKEY **p_params)
 {
-    int result = 0;
+    int ret = 0;
 
     EVP_PKEY_CTX *pkey_ctx = NULL;
     EVP_PKEY *params = NULL;
@@ -65,9 +61,9 @@ static int generate_dsa_params(OSSL_LIB_CTX *libctx,
     if (params == NULL)
         goto end;
 
-    result = 1;
+    ret = 1;
 end:
-    if(result != 1) {
+    if (ret != 1) {
         EVP_PKEY_free(params);
         params = NULL;
     }
@@ -77,20 +73,20 @@ end:
     EVP_PKEY_print_params_fp(stdout, params, 4, NULL);
     fprintf(stdout, "\n");
 
-    return result;
+    return ret;
 }
 
 static int generate_dsa_key(OSSL_LIB_CTX *libctx,
-                            EVP_PKEY *params,
-                            EVP_PKEY **p_pkey)
+    EVP_PKEY *params,
+    EVP_PKEY **p_pkey)
 {
-    int result = 0;
+    int ret = 0;
 
     EVP_PKEY_CTX *ctx = NULL;
     EVP_PKEY *pkey = NULL;
 
     ctx = EVP_PKEY_CTX_new_from_pkey(libctx, params,
-                                     NULL);
+        NULL);
     if (ctx == NULL)
         goto end;
     if (EVP_PKEY_keygen_init(ctx) <= 0)
@@ -101,9 +97,9 @@ static int generate_dsa_key(OSSL_LIB_CTX *libctx,
     if (pkey == NULL)
         goto end;
 
-    result = 1;
+    ret = 1;
 end:
-    if(result != 1) {
+    if (ret != 1) {
         EVP_PKEY_free(pkey);
         pkey = NULL;
     }
@@ -117,54 +113,54 @@ end:
     EVP_PKEY_print_params_fp(stdout, pkey, 4, NULL);
     fprintf(stdout, "\n");
 
-    return result;
+    return ret;
 }
 
 static int extract_public_key(const EVP_PKEY *pkey,
-                              OSSL_PARAM **p_public_key)
+    OSSL_PARAM **p_public_key)
 {
-    int result = 0;
+    int ret = 0;
     OSSL_PARAM *public_key = NULL;
 
     if (EVP_PKEY_todata(pkey, EVP_PKEY_PUBLIC_KEY, &public_key) != 1)
         goto end;
 
-    result = 1;
+    ret = 1;
 end:
-    if (result != 1) {
+    if (ret != 1) {
         OSSL_PARAM_free(public_key);
         public_key = NULL;
     }
     *p_public_key = public_key;
 
-    return result;
+    return ret;
 }
 
 static int extract_keypair(const EVP_PKEY *pkey,
-                           OSSL_PARAM **p_keypair)
+    OSSL_PARAM **p_keypair)
 {
-    int result = 0;
+    int ret = 0;
     OSSL_PARAM *keypair = NULL;
 
     if (EVP_PKEY_todata(pkey, EVP_PKEY_KEYPAIR, &keypair) != 1)
         goto end;
 
-    result = 1;
+    ret = 1;
 end:
-    if (result != 1) {
-        OSSL_PARAM_free(keypair);
+    if (ret != 1) {
+        OSSL_PARAM_clear_free(keypair);
         keypair = NULL;
     }
     *p_keypair = keypair;
 
-    return result;
+    return ret;
 }
 
 static int demo_sign(OSSL_LIB_CTX *libctx,
-                     size_t *p_sig_len, unsigned char **p_sig_value,
-                     OSSL_PARAM keypair[])
+    size_t *p_sig_len, unsigned char **p_sig_value,
+    OSSL_PARAM keypair[])
 {
-    int result = 0;
+    int ret = 0;
     size_t sig_len = 0;
     unsigned char *sig_value = NULL;
     EVP_MD_CTX *ctx = NULL;
@@ -206,10 +202,10 @@ static int demo_sign(OSSL_LIB_CTX *libctx,
     if (EVP_DigestSignFinal(ctx, sig_value, &sig_len) != 1)
         goto end;
 
-    result = 1;
+    ret = 1;
 end:
     EVP_MD_CTX_free(ctx);
-    if (result != 1) {
+    if (ret != 1) {
         OPENSSL_free(sig_value);
         sig_len = 0;
         sig_value = NULL;
@@ -220,16 +216,16 @@ end:
     EVP_PKEY_CTX_free(pkey_ctx);
 
     fprintf(stdout, "Generating signature:\n");
-    BIO_dump_indent_fp(stdout, sig_value, sig_len, 2);
+    BIO_dump_indent_fp(stdout, sig_value, (int)sig_len, 2);
     fprintf(stdout, "\n");
-    return result;
+    return ret;
 }
 
 static int demo_verify(OSSL_LIB_CTX *libctx,
-                       size_t sig_len, unsigned char *sig_value,
-                       OSSL_PARAM public_key[])
+    size_t sig_len, unsigned char *sig_value,
+    OSSL_PARAM public_key[])
 {
-    int result = 0;
+    int ret = 0;
     EVP_MD_CTX *ctx = NULL;
     EVP_PKEY_CTX *pkey_ctx = NULL;
     EVP_PKEY *pkey = NULL;
@@ -243,7 +239,7 @@ static int demo_verify(OSSL_LIB_CTX *libctx,
         goto end;
 
     ctx = EVP_MD_CTX_create();
-    if(ctx == NULL)
+    if (ctx == NULL)
         goto end;
 
     if (EVP_DigestVerifyInit_ex(ctx, NULL, DIGEST, libctx, NULL, pkey, NULL) != 1)
@@ -258,17 +254,17 @@ static int demo_verify(OSSL_LIB_CTX *libctx,
     if (EVP_DigestVerifyFinal(ctx, sig_value, sig_len) != 1)
         goto end;
 
-    result = 1;
+    ret = 1;
 end:
     EVP_PKEY_free(pkey);
     EVP_PKEY_CTX_free(pkey_ctx);
     EVP_MD_CTX_free(ctx);
-    return result;
+    return ret;
 }
 
 int main(void)
 {
-    int result = 0;
+    int ret = EXIT_FAILURE;
     OSSL_LIB_CTX *libctx = NULL;
     EVP_PKEY *params = NULL;
     EVP_PKEY *pkey = NULL;
@@ -301,17 +297,17 @@ int main(void)
     if (demo_verify(libctx, sig_len, sig_value, public_key) != 1)
         goto end;
 
-    result = 1;
+    ret = EXIT_SUCCESS;
 end:
-    if (result != 1)
+    if (ret != EXIT_SUCCESS)
         ERR_print_errors_fp(stderr);
 
     OPENSSL_free(sig_value);
     EVP_PKEY_free(params);
     EVP_PKEY_free(pkey);
     OSSL_PARAM_free(public_key);
-    OSSL_PARAM_free(keypair);
+    OSSL_PARAM_clear_free(keypair);
     OSSL_LIB_CTX_free(libctx);
 
-    return result ? 0 : 1;
+    return ret;
 }
